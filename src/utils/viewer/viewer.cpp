@@ -2466,7 +2466,7 @@ void Viewer::runAudioSimulation() {
   ESP_DEBUG() << "[Audio] Running audio simulation";
   // Run the audio simulation code to generate the impulse response
   esp::sensor::AudioSensor& audioSensor = getAgentAudioSensor();
-  const esp::vec3f& sensorPos = audioSensor.specification()->position;
+  const Mn::Vector3& sensorPos = audioSensor.specification()->position;
   Mn::Matrix4 T = agentBodyNode_->MagnumObject::transformationMatrix();
   Mn::Vector3 pos = T.transformPoint({sensorPos[0], sensorPos[1], sensorPos[2]});
   auto rotScalar = agentBodyNode_->rotation().scalar();

@@ -227,8 +227,8 @@ bool AudioSensor::writeIRWave(const std::string& wavePath)
 bool AudioSensor:: sourceIsVisible() const
 {
   // Compute ray distance and unit-length direction.
-  vec3f direction = sourcePosition_ - listenerPosition_;
-  const float distance = direction.norm();
+  Magnum::Vector3 direction = sourcePosition_ - listenerPosition_;
+  const float distance = direction.length();
   direction /= distance;
 
   // Small bias to prevent self intersections.

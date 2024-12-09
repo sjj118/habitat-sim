@@ -167,8 +167,8 @@ class AudioSensor : public Sensor {
 
   std::vector<std::vector<float>> impulseResponse_;
 
-  vec3f sourcePosition_;
-  vec3f listenerPosition_;
+  Magnum::Vector3 sourcePosition_;
+  Magnum::Vector3 listenerPosition_;
 #endif  // ESP_BUILD_WITH_AUDIO
 
  public:
