@@ -1,17 +1,14 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 import base64
 import io
 import os
+import random
 import subprocess
 import sys
 from functools import partial
-
-if "google.colab" in sys.modules:
-    os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
-
 from typing import Any, Dict, List, Optional, Tuple
 
 import imageio
@@ -19,7 +16,7 @@ import numpy as np
 from PIL import Image
 from tqdm.auto import tqdm
 
-from habitat_sim.utils.common import d3_40_colors_rgb
+from habitat_sim.utils.common import d3_40_colors_hex, d3_40_colors_rgb
 
 
 def is_notebook() -> bool:
@@ -110,7 +107,7 @@ def observation_to_image(
     observation_image: np.ndarray,
     observation_type: str,
     depth_clip: Optional[float] = 10.0,
-):
+) -> Image.Image:
     """Generate an rgb image from a sensor observation. Supported types are: "color", "depth", "semantic"
 
     :param observation_image: Raw observation image from sensor output.
@@ -119,7 +116,7 @@ def observation_to_image(
 
     :return: PIL Image object or None if fails.
     """
-    rgb_image = None
+    rgb_image: Image.Image = None
     if observation_type == "color":
         rgb_image = Image.fromarray(np.uint8(observation_image))
     elif observation_type == "depth":
@@ -165,9 +162,8 @@ def make_video_frame(
     video_dims,
     overlay_settings=None,
     observation_to_image=observation_to_image,
-):
-
-    image_frame = observation_to_image(ob[primary_obs], primary_obs_type)
+) -> Image.Image:
+    image_frame: Image.Image = observation_to_image(ob[primary_obs], primary_obs_type)
     if image_frame is None:
         raise RuntimeError(
             "make_video_new : Aborting, primary image processing failed."
@@ -273,7 +269,7 @@ def depth_to_rgb(depth_image: np.ndarray, clip_max: float = 10.0) -> np.ndarray:
     return np.asarray(rgb_d_im)
 
 
-def semantic_to_rgb(semantic_image: np.ndarray) -> np.ndarray:
+def semantic_to_rgb(semantic_image: np.ndarray) -> Image.Image:
     """Map semantic ids to colors and genereate an rgb image
 
     :param semantic_image: Raw semantic observation image from sensor output.
@@ -284,6 +280,40 @@ def semantic_to_rgb(semantic_image: np.ndarray) -> np.ndarray:
         "P", (semantic_image.shape[1], semantic_image.shape[0])
     )
     semantic_image_rgb.putpalette(d3_40_colors_rgb.flatten())
-    semantic_image_rgb.putdata((semantic_image.flatten() % 40).astype(np.uint8))
+    semantic_image_rgb.putdata((semantic_image.flatten() % 40).astype(np.uint8))  # type: ignore[arg-type]
     semantic_image_rgb = semantic_image_rgb.convert("RGBA")
     return semantic_image_rgb
+
+
+def get_island_colored_map(island_top_down_map_data: np.ndarray) -> Image.Image:
+    """
+    Get the topdown map for a scene with island colors.
+
+    :param island_top_down_map_data: The island index map data from Pathfinder.get_topdown_island_view()
+
+    :return: rgb Image of islands at the desired slice.
+    """
+
+    white = int("0xffffff", base=16)
+    image_size: Tuple[int, int] = island_top_down_map_data.shape  # type: ignore[assignment]
+    island_map = Image.new("RGB", image_size, color=white)
+    pixels = island_map.load()
+    extra_colors: List[int] = []
+    r = lambda: random.randint(0, 255)
+    for x in range(island_top_down_map_data.shape[0]):
+        for y in range(island_top_down_map_data.shape[1]):
+            if island_top_down_map_data[x, y] >= 0:
+                color_index = island_top_down_map_data[x, y]
+                if color_index < len(d3_40_colors_hex):
+                    # fixed colors from a selected list
+                    # NOTE: PIL Image origin is top left, so invert y
+                    pixels[x, -y] = int(d3_40_colors_hex[color_index], base=16)
+                else:
+                    random_color_index = color_index - len(d3_40_colors_hex)
+                    # pick random colors once fixed colors are overflowed
+                    while random_color_index >= len(extra_colors):
+                        new_color = int(("0x%02X%02X%02X" % (r(), r(), r())), base=16)
+                        if new_color not in extra_colors:
+                            extra_colors.append(new_color)
+                    pixels[x, -y] = extra_colors[random_color_index]
+    return island_map

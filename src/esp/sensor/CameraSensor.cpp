@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -10,7 +10,7 @@
 #include <cmath>
 
 #include "CameraSensor.h"
-#include "esp/gfx/DepthUnprojection.h"
+#include "esp/gfx_batch/DepthUnprojection.h"
 #include "esp/sim/Simulator.h"
 
 namespace esp {
@@ -29,12 +29,41 @@ void CameraSensorSpec::sanityCheck() const {
                  "SensorSubType "
                  "Pinhole or Orthographic", );
   CORRADE_ASSERT(
-      orthoScale > 0,
+      orthoScale > 0.0f,
       "CameraSensorSpec::sanityCheck(): orthoScale must be greater than 0", );
 }
 
 bool CameraSensorSpec::operator==(const CameraSensorSpec& a) const {
-  return VisualSensorSpec::operator==(a) && orthoScale == a.orthoScale;
+  return VisualSensorSpec::operator==(a) && a.orthoScale == orthoScale &&
+         a.hfov == hfov;
+}
+
+namespace {
+
+/* Needs to be an internal utility because CameraSensor uses everything except
+   hFoV from the CameraSensorSpec */
+Mn::Matrix4 projectionMatrixInternal(const CameraSensorSpec& spec,
+                                     Mn::Rad hfov) {
+  const Mn::Vector2 nearPlaneSize{1.0f,
+                                  Mn::Vector2{spec.resolution}.aspectRatio()};
+  if (spec.sensorSubType == SensorSubType::Orthographic) {
+    return Mn::Matrix4::orthographicProjection(nearPlaneSize / spec.orthoScale,
+                                               spec.near, spec.far);
+  } else if (spec.sensorSubType == SensorSubType::Pinhole) {
+    const float scale = 1.0f / (2.0f * spec.near * Mn::Math::tan(0.5f * hfov));
+    return Mn::Matrix4::perspectiveProjection(nearPlaneSize / scale, spec.near,
+                                              spec.far);
+  } else
+    CORRADE_ASSERT_UNREACHABLE(
+        "CameraSensorSpec::projectionMatrix(): sensorSpec does not have "
+        "SensorSubType Pinhole or Orthographic",
+        {});
+}
+
+}  // namespace
+
+Mn::Matrix4 CameraSensorSpec::projectionMatrix() const {
+  return projectionMatrixInternal(*this, hfov);
 }
 
 CameraSensor::CameraSensor(scene::SceneNode& cameraNode,
@@ -42,7 +71,8 @@ CameraSensor::CameraSensor(scene::SceneNode& cameraNode,
     : VisualSensor(cameraNode, spec),
       baseProjMatrix_(Magnum::Math::IdentityInit),
       zoomMatrix_(Magnum::Math::IdentityInit),
-      renderCamera_(new gfx::RenderCamera(cameraNode)) {
+      renderCamera_(new gfx::RenderCamera(cameraNode,
+                                          visualSensorSpec_->semanticTarget)) {
   // Sanity check
   CORRADE_ASSERT(
       cameraSensorSpec_,
@@ -77,28 +107,7 @@ void CameraSensor::recomputeProjectionMatrix() {
 
 void CameraSensor::recomputeBaseProjectionMatrix() {
   // refresh size after relevant parameters have changed
-  CORRADE_ASSERT(
-      cameraSensorSpec_->sensorSubType == SensorSubType::Pinhole ||
-          cameraSensorSpec_->sensorSubType == SensorSubType::Orthographic,
-      "CameraSensor::recomputeBaseProjectionMatrix(): sensorSpec does not have "
-      "SensorSubType "
-      "Pinhole or Orthographic", );
-  Mn::Vector2 nearPlaneSize_ =
-      Mn::Vector2{1.0f, static_cast<float>(cameraSensorSpec_->resolution[0]) /
-                            cameraSensorSpec_->resolution[1]};
-  if (cameraSensorSpec_->sensorSubType == SensorSubType::Orthographic) {
-    nearPlaneSize_ /= cameraSensorSpec_->orthoScale;
-    baseProjMatrix_ = Mn::Matrix4::orthographicProjection(
-        nearPlaneSize_, cameraSensorSpec_->near, cameraSensorSpec_->far);
-  } else {
-    // cameraSensorSpec_ is subtype Pinhole
-    Magnum::Deg halfHFovRad{Magnum::Deg(.5 * hfov_)};
-    float scale = 1.0f / (2.0f * cameraSensorSpec_->near *
-                          Magnum::Math::tan(halfHFovRad));
-    nearPlaneSize_ /= scale;
-    baseProjMatrix_ = Mn::Matrix4::perspectiveProjection(
-        nearPlaneSize_, cameraSensorSpec_->near, cameraSensorSpec_->far);
-  }
+  baseProjMatrix_ = projectionMatrixInternal(*cameraSensorSpec_, hfov_);
   // build projection matrix
   recomputeProjectionMatrix();
 }  // CameraSensor::recomputeNearPlaneSize
@@ -132,6 +141,9 @@ bool CameraSensor::drawObservation(sim::Simulator& sim) {
         (&sim.getActiveSemanticSceneGraph() != &sim.getActiveSceneGraph());
 
     if (twoSceneGraphs) {
+      // Helper's constructor moves this camera to the semantic scene graph.
+      // When helper goes out of scope, its destructor moves it back to main
+      // scene graph.
       VisualSensor::MoveSemanticSensorNodeHelper helper(*this, sim);
       draw(sim.getActiveSemanticSceneGraph(), flags);
     } else {
@@ -146,10 +158,12 @@ bool CameraSensor::drawObservation(sim::Simulator& sim) {
     // SensorType is Color, Depth or any other type
     draw(sim.getActiveSceneGraph(), flags);
 
-    // include DebugLineRender in Color sensors
     if (cameraSensorSpec_->sensorType == SensorType::Color) {
+      // include HBAO in Color sensors (only if enabled for render target)
+      renderTarget().tryDrawHbao();
+
+      // include DebugLineRender in Color sensors
       const auto debugLineRender = sim.getDebugLineRender();
-      // debugLineRender is generally null (unless the user drew lines)
       if (debugLineRender) {
         debugLineRender->flushLines(renderCamera_->cameraMatrix(),
                                     renderCamera_->projectionMatrix(),
@@ -167,7 +181,7 @@ Corrade::Containers::Optional<Magnum::Vector2> CameraSensor::depthUnprojection()
     const {
   // projectionMatrix_ is managed by implementation class and is set whenever
   // quantities change.
-  return {gfx::calculateDepthUnprojection(projectionMatrix_)};
+  return {gfx_batch::calculateDepthUnprojection(projectionMatrix_)};
 }  // CameraSensor::depthUnprojection
 
 }  // namespace sensor

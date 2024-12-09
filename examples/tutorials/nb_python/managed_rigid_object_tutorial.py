@@ -1,12 +1,9 @@
 # ---
 # jupyter:
 #   accelerator: GPU
-#   colab:
-#     name: Managed Rigid Object Tutorial
-#     provenance: []
 #   jupytext:
 #     cell_metadata_filter: -all
-#     formats: nb_python//py:percent,colabs//ipynb
+#     formats: nb_python//py:percent,notebooks//ipynb
 #     notebook_metadata_filter: all
 #     text_representation:
 #       extension: .py
@@ -19,14 +16,9 @@
 # ---
 
 # %%
-# !curl -L https://raw.githubusercontent.com/facebookresearch/habitat-sim/main/examples/colab_utils/colab_install.sh | NIGHTLY=true bash -s
-
-# %%
-# %cd /content/habitat-sim
 ## [setup]
 import os
 import random
-import sys
 
 import git
 import magnum as mn
@@ -35,12 +27,8 @@ import numpy as np
 import habitat_sim
 from habitat_sim.utils import viz_utils as vut
 
-if "google.colab" in sys.modules:
-    os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
-
 repo = git.Repo(".", search_parent_directories=True)
 dir_path = repo.working_tree_dir
-# %cd $dir_path
 data_path = os.path.join(dir_path, "data")
 output_path = os.path.join(
     dir_path, "examples/tutorials/managed_rigid_object_tutorial_output/"
@@ -63,7 +51,6 @@ def make_configuration():
         data_path, "scene_datasets/habitat-test-scenes/apartment_1.glb"
     )
     assert os.path.exists(backend_cfg.scene_id)
-    backend_cfg.enable_physics = True
 
     # sensor configurations
     # Note: all sensors must have the same resolution
@@ -94,7 +81,7 @@ def make_configuration():
     rgba_camera_3rdperson_spec.sensor_type = habitat_sim.SensorType.COLOR
     rgba_camera_3rdperson_spec.resolution = camera_resolution
     rgba_camera_3rdperson_spec.position = [0.0, 1.0, 0.3]
-    rgba_camera_3rdperson_spec.orientation = [-45, 0.0, 0.0]
+    rgba_camera_3rdperson_spec.orientation = [-45.0, 0.0, 0.0]
     rgba_camera_3rdperson_spec.sensor_subtype = habitat_sim.SensorSubType.PINHOLE
     sensor_specs.append(rgba_camera_3rdperson_spec)
 
@@ -402,7 +389,7 @@ if __name__ == "__main__":
     # %%
     # [embodied_agent]
 
-    # load the lobot_merged asset
+    # load the locobot_merged asset
     locobot_template_id = obj_templates_mgr.load_configs(
         str(os.path.join(data_path, "objects/locobot_merged"))
     )[0]
@@ -473,7 +460,7 @@ if __name__ == "__main__":
     # %%
     # [embodied_agent_navmesh]
 
-    # load the lobot_merged asset
+    # load the locobot_merged asset
     locobot_template_id = obj_templates_mgr.load_configs(
         str(os.path.join(data_path, "objects/locobot_merged"))
     )[0]
@@ -529,7 +516,7 @@ if __name__ == "__main__":
             locobot.translation = end_pos
             locobot.rotation = target_rigid_state.rotation
 
-            # Check if a collision occured
+            # Check if a collision occurred
             dist_moved_before_filter = (
                 target_rigid_state.translation - previous_rigid_state.translation
             ).dot()

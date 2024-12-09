@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -8,13 +8,6 @@
 #include <fstream>
 #include <iostream>
 
-#include <Magnum/configure.h>
-#include <Magnum/ImGuiIntegration/Context.hpp>
-#ifdef MAGNUM_TARGET_WEBGL
-#include <Magnum/Platform/EmscriptenApplication.h>
-#else
-#include <Magnum/Platform/GlfwApplication.h>
-#endif
 #include <Magnum/GL/Context.h>
 #include <Magnum/GL/Extensions.h>
 #include <Magnum/GL/Framebuffer.h>
@@ -22,45 +15,51 @@
 #include <Magnum/GL/RenderbufferFormat.h>
 #include <Magnum/Image.h>
 #include <Magnum/PixelFormat.h>
+#include <Magnum/Platform/GlfwApplication.h>
 #include <Magnum/SceneGraph/Camera.h>
 #include <Magnum/Shaders/Shaders.h>
 #include <Magnum/Timeline.h>
+#include <Magnum/configure.h>
 #include "esp/core/configure.h"
 #include "esp/gfx/RenderCamera.h"
 #include "esp/gfx/Renderer.h"
 #include "esp/gfx/replay/Recorder.h"
 #include "esp/gfx/replay/ReplayManager.h"
 #include "esp/nav/PathFinder.h"
-#include "esp/scene/ObjectControls.h"
 #include "esp/scene/SceneNode.h"
 #include "esp/sensor/configure.h"
 
+#include <Corrade/PluginManager/Manager.h>
 #include <Corrade/Utility/Arguments.h>
 #include <Corrade/Utility/Assert.h>
 #include <Corrade/Utility/Debug.h>
 #include <Corrade/Utility/DebugStl.h>
 #include <Corrade/Utility/FormatStl.h>
 #include <Corrade/Utility/Path.h>
+#include <Corrade/Utility/Resource.h>
 #include <Corrade/Utility/String.h>
 #include <Magnum/DebugTools/FrameProfiler.h>
 #include <Magnum/DebugTools/Screenshot.h>
 #include <Magnum/EigenIntegration/GeometryIntegration.h>
 #include <Magnum/GL/DefaultFramebuffer.h>
 #include <Magnum/GL/Renderer.h>
+#include <Magnum/Shaders/VectorGL.h>
+#include <Magnum/Text/AbstractFont.h>
+#include <Magnum/Text/GlyphCache.h>
+#include <Magnum/Text/Renderer.h>
 #include "esp/core/Esp.h"
 #include "esp/core/Utility.h"
 #include "esp/gfx/Drawable.h"
 #include "esp/scene/SemanticScene.h"
 
-#ifdef ESP_BUILD_WITH_VHACD
-#include "esp/geo/VoxelUtils.h"
-#endif
-
 #ifdef ESP_BUILD_WITH_AUDIO
 #include "esp/sensor/AudioSensor.h"
 #endif  // ESP_BUILD_WITH_AUDIO
 
+#include "esp/metadata/MetadataMediator.h"
 #include "esp/physics/configure.h"
+#include "esp/physics/objectManagers/ArticulatedObjectManager.h"
+#include "esp/physics/objectManagers/RigidObjectManager.h"
 #include "esp/sensor/CameraSensor.h"
 #include "esp/sensor/EquirectangularSensor.h"
 #include "esp/sensor/FisheyeSensor.h"
@@ -228,6 +227,9 @@ class Viewer : public Mn::Platform::Application {
   void mouseScrollEvent(MouseScrollEvent& event) override;
   void keyPressEvent(KeyEvent& event) override;
   void keyReleaseEvent(KeyEvent& event) override;
+  Mn::Vector3 moveFilterFunc(const Mn::Vector3& start,
+                             const Mn::Vector3& end,
+                             bool allowSliding = true);
   void moveAndLook(int repetitions);
 
   /**
@@ -240,20 +242,19 @@ class Viewer : public Mn::Platform::Application {
    */
 
   Mn::Vector2i getMousePosition(Mn::Vector2i mouseEventPosition) {
-    // aquire the mouse position, and scale it based on ratio of framebuffer and
-    // window size.
-    // on retina displays this scaling calc is necessary to account for HiDPI
-    // monitors.
-    Mn::Vector2 scaling = Mn::Vector2{framebufferSize()} * dpiScaling() /
-                          Mn::Vector2{windowSize()};
+    // aquire the mouse position, and scale it based on ratio of actual
+    // framebuffer and window size. The two can differ on HiDPI displays or
+    // if a quarter-size rendering is active.
+    Mn::Vector2 scaling =
+        Mn::Vector2{scaledFramebufferSize_} / Mn::Vector2{windowSize()};
 
     return Mn::Vector2i(mouseEventPosition * scaling);
   }
   // exists if a mouse grabbing constraint is active, destroyed on release
   std::unique_ptr<MouseGrabber> mouseGrabber_ = nullptr;
 
-  //! Most recently custom loaded URDF ('t' key)
-  std::string cachedURDF_ = "";
+  //! Most recently custom loaded URDF or AO_config.json ('t' key)
+  std::string cachedAOConfig_ = "";
 
   /**
    * @brief Instance an object from an ObjectAttributes.
@@ -289,19 +290,6 @@ class Viewer : public Mn::Platform::Application {
   void removeLastObject();
   void invertGravity();
 
-#ifdef ESP_BUILD_WITH_VHACD
-  void displayStageDistanceGradientField();
-
-  void iterateAndDisplaySignedDistanceField();
-
-  void displayVoxelField(int objectID);
-
-  int objectDisplayed = -1;
-
-  //! The slice of the grid's SDF to visualize.
-  int voxelDistance = 0;
-#endif
-
   /**
    * @brief Toggle between ortho and perspective camera
    */
@@ -312,8 +300,6 @@ class Viewer : public Mn::Platform::Application {
    * @brief Display information about the currently loaded scene.
    */
   void dispMetadataInfo();
-
-  esp::agent::AgentConfiguration agentConfig_;
 
   void saveAgentAndSensorTransformToFile();
   void loadAgentAndSensorTransformFromFile();
@@ -351,8 +337,6 @@ In LOOK mode (default):
     Read Semantic ID and tag of clicked object (Currently only HM3D);
   SHIFT-RIGHT:
     Click a mesh to highlight it.
-  CTRL-RIGHT:
-    (physics) Click on an object to voxelize it and display the voxelization.
   WHEEL:
     Modify orthographic camera zoom/perspective camera FOV (+SHIFT for fine grained control)
 In GRAB mode (with 'enable-physics'):
@@ -403,14 +387,12 @@ Key Commands:
   '8': Instance a random primitive object in front of the agent.
   'o': Instance a random file-based object in front of the agent.
   'u': Remove most recently instanced rigid object.
-  't': Instance an ArticulatedObject in front of the camera from a URDF file by entering the filepath when prompted.
+  't': Instance an ArticulatedObject in front of the camera from a URDF or .ao_config.json file by entering the filepath when prompted.
     +ALT: Import the object with a fixed base.
-    +SHIFT Quick-reload the previously specified URDF.
+    +SHIFT Quick-reload the previously specified configuration file.
   'b': Toggle display of object bounding boxes.
   'p': Save current simulation state to SceneInstanceAttributes JSON file (with non-colliding filename).
   'v': (physics) Invert gravity.
-  'g': (physics) Display a stage's signed distance gradient vector field.
-  'k': (physics) Iterate through different ranges of the stage's voxelized signed distance field.
 
   Additional Utilities:
   'r': Write a replay of the recent simulated frames to a file specified by --gfx-replay-record-filepath.
@@ -449,6 +431,8 @@ Key Commands:
       ESP_DEBUG() << str;
     }
   }
+
+  float timeSinceLastSimulation_ = 0.0;
 
   /**
    * @brief vector holding past agent locations to build trajectory
@@ -598,14 +582,15 @@ Key Commands:
 
   bool debugBullet_ = false;
 
+  //! The SceneNode constructed to hold a set of Sensor objects.
   esp::scene::SceneNode* agentBodyNode_ = nullptr;
-
-  const int defaultAgentId_ = 0;
-  esp::agent::Agent::ptr defaultAgent_ = nullptr;
+  esp::sensor::SensorSetup sensorSpecs = esp::sensor::SensorSetup();
 
   // if currently orthographic
   bool isOrtho_ = false;
 
+  Mn::Float quarterResolutionScalingLimit_;
+  Mn::Vector2i scaledFramebufferSize_;
   esp::gfx::RenderCamera* renderCamera_ = nullptr;
   esp::scene::SceneGraph* activeSceneGraph_ = nullptr;
   bool drawObjectBBs = false;
@@ -621,7 +606,12 @@ Key Commands:
 
   Mn::Timeline timeline_;
 
-  Mn::ImGuiIntegration::Context imgui_{Mn::NoCreate};
+  /* Text rendering */
+  Cr::PluginManager::Manager<Mn::Text::AbstractFont> fontManager_;
+  Cr::Containers::Pointer<Mn::Text::AbstractFont> font_;
+  Cr::Containers::Optional<Mn::Text::GlyphCache> fontGlyphCache_;
+  Mn::Shaders::VectorGL2D fontShader_;
+  Cr::Containers::Optional<Mn::Text::Renderer2D> fontText_;
   bool showFPS_ = true;
 
   // NOTE: Mouse + shift is to select object on the screen!!
@@ -673,15 +663,14 @@ Key Commands:
 #endif  // ESP_BUILD_WITH_AUDIO
 };      // class viewer declaration
 
-void addSensors(esp::agent::AgentConfiguration& agentConfig, bool isOrtho) {
-  const auto viewportSize = Mn::GL::defaultFramebuffer.viewport().size();
-
+void addSensors(esp::sensor::SensorSetup& sensorSpecs,
+                bool isOrtho,
+                const Mn::Vector2i& framebufferSize) {
   auto addCameraSensor = [&](const std::string& uuid,
                              esp::sensor::SensorType sensorType) {
-    agentConfig.sensorSpecifications.emplace_back(
-        esp::sensor::CameraSensorSpec::create());
-    auto spec = static_cast<esp::sensor::CameraSensorSpec*>(
-        agentConfig.sensorSpecifications.back().get());
+    sensorSpecs.emplace_back(esp::sensor::CameraSensorSpec::create());
+    auto spec =
+        static_cast<esp::sensor::CameraSensorSpec*>(sensorSpecs.back().get());
 
     spec->uuid = uuid;
     spec->sensorSubType = isOrtho ? esp::sensor::SensorSubType::Orthographic
@@ -693,7 +682,7 @@ void addSensors(esp::agent::AgentConfiguration& agentConfig, bool isOrtho) {
     }
     spec->position = {0.0f, rgbSensorHeight, 0.0f};
     spec->orientation = {0, 0, 0};
-    spec->resolution = esp::vec2i(viewportSize[1], viewportSize[0]);
+    spec->resolution = framebufferSize.flipped();
   };
   // add the camera color sensor
   // for historical reasons, we call it "rgba_camera"
@@ -709,10 +698,10 @@ void addSensors(esp::agent::AgentConfiguration& agentConfig, bool isOrtho) {
     // TODO: support the other model types in the future.
     CORRADE_INTERNAL_ASSERT(modelType ==
                             esp::sensor::FisheyeSensorModelType::DoubleSphere);
-    agentConfig.sensorSpecifications.emplace_back(
+    sensorSpecs.emplace_back(
         esp::sensor::FisheyeSensorDoubleSphereSpec::create());
     auto spec = static_cast<esp::sensor::FisheyeSensorDoubleSphereSpec*>(
-        agentConfig.sensorSpecifications.back().get());
+        sensorSpecs.back().get());
 
     spec->uuid = uuid;
     spec->sensorType = sensorType;
@@ -722,10 +711,9 @@ void addSensors(esp::agent::AgentConfiguration& agentConfig, bool isOrtho) {
     }
     spec->sensorSubType = esp::sensor::SensorSubType::Fisheye;
     spec->fisheyeModelType = modelType;
-    spec->resolution = esp::vec2i(viewportSize[1], viewportSize[0]);
+    spec->resolution = framebufferSize.flipped();
     // default viewport size: 1600 x 1200
-    spec->principalPointOffset =
-        Mn::Vector2(viewportSize[0] / 2, viewportSize[1] / 2);
+    spec->principalPointOffset = Mn::Vector2{framebufferSize} / 2.0f;
     if (modelType == esp::sensor::FisheyeSensorModelType::DoubleSphere) {
       // in this demo, we choose "GoPro":
       spec->focalLength = {364.84f, 364.86f};
@@ -756,10 +744,9 @@ void addSensors(esp::agent::AgentConfiguration& agentConfig, bool isOrtho) {
 
   auto addEquirectangularSensor = [&](const std::string& uuid,
                                       esp::sensor::SensorType sensorType) {
-    agentConfig.sensorSpecifications.emplace_back(
-        esp::sensor::EquirectangularSensorSpec::create());
+    sensorSpecs.emplace_back(esp::sensor::EquirectangularSensorSpec::create());
     auto spec = static_cast<esp::sensor::EquirectangularSensorSpec*>(
-        agentConfig.sensorSpecifications.back().get());
+        sensorSpecs.back().get());
     spec->uuid = uuid;
     spec->sensorType = sensorType;
     if (sensorType == esp::sensor::SensorType::Depth ||
@@ -767,7 +754,7 @@ void addSensors(esp::agent::AgentConfiguration& agentConfig, bool isOrtho) {
       spec->channels = 1;
     }
     spec->sensorSubType = esp::sensor::SensorSubType::Equirectangular;
-    spec->resolution = esp::vec2i(viewportSize[1], viewportSize[0]);
+    spec->resolution = framebufferSize.flipped();
   };
   // add the equirectangular sensor
   addEquirectangularSensor("rgba_equirectangular",
@@ -786,10 +773,9 @@ void addSensors(esp::agent::AgentConfiguration& agentConfig, bool isOrtho) {
   auto addAudioSensor = [&](const std::string& uuid,
                             esp::sensor::SensorType sensorType,
                             esp::sensor::SensorSubType sensorSubType) {
-    agentConfig.sensorSpecifications.emplace_back(
-        esp::sensor::AudioSensorSpec::create());
-    auto spec = static_cast<esp::sensor::AudioSensorSpec*>(
-        agentConfig.sensorSpecifications.back().get());
+    sensorSpecs.emplace_back(esp::sensor::AudioSensorSpec::create());
+    auto spec =
+        static_cast<esp::sensor::AudioSensorSpec*>(sensorSpecs.back().get());
     spec->uuid = uuid;
     spec->sensorType = sensorType;
     spec->sensorSubType = sensorSubType;
@@ -805,29 +791,26 @@ Viewer::Viewer(const Arguments& arguments)
                                     .setTitle("Viewer")
                                     .setWindowFlags(
                                         Configuration::WindowFlag::Resizable),
-                                GLConfiguration{}
-                                    .setColorBufferSize(
-                                        Mn::Vector4i(8, 8, 8, 8))
-                                    .setSampleCount(4)},
+                                GLConfiguration{}.setColorBufferSize(
+                                    Mn::Vector4i(8, 8, 8, 8))},
       loggingContext_{},
       simConfig_(),
       MM_(std::make_shared<esp::metadata::MetadataMediator>(simConfig_)),
       curSceneInstances_{} {
   Cr::Utility::Arguments args;
-#ifdef CORRADE_TARGET_EMSCRIPTEN
-  args.addNamedArgument("scene")
-#else
   args.addArgument("scene")
-#endif
       .setHelp("scene", "scene/stage file to load")
       .addSkippedPrefix("magnum", "engine-specific options")
       .setGlobalHelp("Displays a 3D scene file provided on command line")
       .addOption("dataset", "default")
       .setHelp("dataset", "dataset configuration file to use")
       .addBooleanOption("enable-physics")
-      .addBooleanOption("stage-requires-lighting")
-      .setHelp("stage-requires-lighting",
-               "Stage asset should be lit with Phong shading.")
+      .setHelp("enable-physics", "Enable Bullet physics.")
+      .addBooleanOption("hbao")
+      .setHelp("hbao", "Enable Horizon-based Ambient Occlusion.")
+      .addBooleanOption("use-default-lighting")
+      .setHelp("use-default-lighting",
+               "Scene should be lit using the default lighting configuration.")
       .addBooleanOption("debug-bullet")
       .setHelp("debug-bullet", "Render Bullet physics debug wireframes.")
       .addOption("gfx-replay-record-filepath")
@@ -855,29 +838,56 @@ Viewer::Viewer(const Arguments& arguments)
       .addOption("agent-transform-filepath")
       .setHelp("agent-transform-filepath",
                "Specify path to load camera transform from.")
-      .addBooleanOption("shadows")
-      .setHelp("shadows", "Rendering shadows. (only works with PBR rendering.")
-      .addBooleanOption("ibl")
-      .setHelp("ibl",
-               "Image Based Lighting (it works only when PBR models exist in "
-               "the scene.")
+      .addOption("quarter-resolution-scaling-limit", "2.0")
+      .setHelp("quarter-resolution-scaling-limit",
+               "Display scaling factor at which to render at quarter "
+               "resolution.")
       .parse(arguments.argc, arguments.argv);
 
-  const auto viewportSize = Mn::GL::defaultFramebuffer.viewport().size();
+  /* The size used for actual rendering is size of the framebuffer by default.
+     On HiDPI displays with a scaling factor larger or equal to 2, it's quarter
+     size instead. */
+  quarterResolutionScalingLimit_ =
+      args.value<Mn::Float>("quarter-resolution-scaling-limit");
+  scaledFramebufferSize_ = framebufferSize();
+  if ((Mn::Vector2{framebufferSize()} * dpiScaling() /
+       Mn::Vector2{windowSize()})
+          .max() >= quarterResolutionScalingLimit_)
+    scaledFramebufferSize_ /= 2;
 
-  imgui_ =
-      Mn::ImGuiIntegration::Context(Mn::Vector2{windowSize()} / dpiScaling(),
-                                    windowSize(), framebufferSize());
-  ImGui::GetIO().IniFilename = nullptr;
+  /* Set up text rendering. This is done always at the full framebuffer size
+     for best crispness. */
+  {
+    /* Render the font in a size corresponding to actual pixels, taking DPI
+       scaling into account. Docs for reference:
+       https://doc.magnum.graphics/magnum/classMagnum_1_1Platform_1_1Sdl2Application.html#Platform-Sdl2Application-dpi
+     */
+    const Mn::Float fontSize =
+        13.0f * (Mn::Vector2{framebufferSize()} * dpiScaling() /
+                 Mn::Vector2{windowSize()})
+                    .x();
 
-  /* Set up proper blending to be used by ImGui. There's a great chance
-     you'll need this exact behavior for the rest of your scene. If not, set
-     this only for the drawFrame() call. */
-  Mn::GL::Renderer::setBlendEquation(Mn::GL::Renderer::BlendEquation::Add,
-                                     Mn::GL::Renderer::BlendEquation::Add);
-  Mn::GL::Renderer::setBlendFunction(
-      Mn::GL::Renderer::BlendFunction::SourceAlpha,
-      Mn::GL::Renderer::BlendFunction::OneMinusSourceAlpha);
+    Cr::Utility::Resource rs{"fonts"};
+    font_ = fontManager_.loadAndInstantiate("TrueTypeFont");
+    if (!font_ || !font_->openData(rs.getRaw("ProggyClean.ttf"), fontSize))
+      Mn::Fatal{} << "Cannot open font file";
+
+    fontGlyphCache_.emplace(Mn::Vector2i{256}, Mn::Vector2i{1});
+    /* Don't destroy the bitmap font with smooth scaling */
+    fontGlyphCache_->texture().setMagnificationFilter(
+        Mn::SamplerFilter::Nearest);
+    font_->fillGlyphCache(*fontGlyphCache_,
+                          "abcdefghijklmnopqrstuvwxyz"
+                          "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                          "0123456789:-_+,.! %µ");
+
+    /* But as the text projection uses virtual window pixels, use just the
+       unscaled size for the actual text */
+    fontText_.emplace(*font_, *fontGlyphCache_, fontSize,
+                      Mn::Text::Alignment::TopLeft);
+    fontText_->reserve(1024, Mn::GL::BufferUsage::DynamicDraw,
+                       Mn::GL::BufferUsage::StaticDraw);
+  }
 
   // Setup renderer and shader defaults
   Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::DepthTest);
@@ -896,57 +906,20 @@ Viewer::Viewer(const Arguments& arguments)
   recomputeNavmesh_ = args.isSet("recompute-navmesh");
   navmeshFilename_ = args.value("navmesh-file").empty();
 
-  // configure default Agent Config for actions and sensors
-  agentConfig_ = esp::agent::AgentConfiguration();
-  agentConfig_.height = rgbSensorHeight;
-  agentConfig_.actionSpace = {
-      // setup viewer action space
-      {"moveForward",
-       esp::agent::ActionSpec::create(
-           "moveForward",
-           esp::agent::ActuationMap{{"amount", moveSensitivity}})},
-      {"moveBackward",
-       esp::agent::ActionSpec::create(
-           "moveBackward",
-           esp::agent::ActuationMap{{"amount", moveSensitivity}})},
-      {"moveLeft",
-       esp::agent::ActionSpec::create(
-           "moveLeft", esp::agent::ActuationMap{{"amount", moveSensitivity}})},
-      {"moveRight",
-       esp::agent::ActionSpec::create(
-           "moveRight", esp::agent::ActuationMap{{"amount", moveSensitivity}})},
-      {"moveDown",
-       esp::agent::ActionSpec::create(
-           "moveDown", esp::agent::ActuationMap{{"amount", moveSensitivity}})},
-      {"moveUp",
-       esp::agent::ActionSpec::create(
-           "moveUp", esp::agent::ActuationMap{{"amount", moveSensitivity}})},
-      {"turnLeft",
-       esp::agent::ActionSpec::create(
-           "turnLeft", esp::agent::ActuationMap{{"amount", lookSensitivity}})},
-      {"turnRight",
-       esp::agent::ActionSpec::create(
-           "turnRight", esp::agent::ActuationMap{{"amount", lookSensitivity}})},
-      {"lookUp",
-       esp::agent::ActionSpec::create(
-           "lookUp", esp::agent::ActuationMap{{"amount", lookSensitivity}})},
-      {"lookDown",
-       esp::agent::ActionSpec::create(
-           "lookDown", esp::agent::ActuationMap{{"amount", lookSensitivity}})},
-  };
   // add sensor specifications to agent config
-  addSensors(agentConfig_, isOrtho_);
+  addSensors(sensorSpecs, isOrtho_, scaledFramebufferSize_);
 
   // setup SimulatorConfig from args.
   simConfig_.activeSceneName = args.value("scene");
   simConfig_.sceneDatasetConfigFile = args.value("dataset");
   simConfig_.enablePhysics = args.isSet("enable-physics");
+  simConfig_.enableHBAO = args.isSet("hbao");
   simConfig_.frustumCulling = true;
   simConfig_.requiresTextures = true;
   simConfig_.enableGfxReplaySave = !gfxReplayRecordFilepath_.empty();
   simConfig_.useSemanticTexturesIfFound = !args.isSet("no-semantic-textures");
-  if (args.isSet("stage-requires-lighting")) {
-    ESP_DEBUG() << "Stage using DEFAULT_LIGHTING_KEY";
+  if (args.isSet("use-default-lighting")) {
+    ESP_DEBUG() << "Scene lit using DEFAULT_LIGHTING_KEY";
     simConfig_.overrideSceneLightDefaults = true;
     simConfig_.sceneLightSetupKey = esp::DEFAULT_LIGHTING_KEY;
   }
@@ -968,9 +941,6 @@ Viewer::Viewer(const Arguments& arguments)
   ESP_DEBUG() << "Scene Dataset Configuration file location :"
               << simConfig_.sceneDatasetConfigFile
               << "| Loading Scene :" << simConfig_.activeSceneName;
-
-  // image based lighting (PBR)
-  simConfig_.pbrImageBasedLighting = args.isSet("ibl");
 
   // create simulator instance
   simulator_ = esp::sim::Simulator::create_unique(simConfig_, MM_);
@@ -1009,7 +979,8 @@ Viewer::Viewer(const Arguments& arguments)
   // initialize sim navmesh, agent, sensors after creation/reconfigure
   initSimPostReconfigure();
 
-  objectPickingHelper_ = std::make_unique<ObjectPickingHelper>(viewportSize);
+  objectPickingHelper_ =
+      std::make_unique<ObjectPickingHelper>(scaledFramebufferSize_);
 
   /**
    * Set up per frame profiler to be aware of bottlenecking in processing data
@@ -1052,14 +1023,6 @@ Viewer::Viewer(const Arguments& arguments)
   // Per frame profiler will average measurements taken over previous 50 frames
   profiler_.setup(profilerValues, 50);
 
-  // shadows
-  if (args.isSet("shadows")) {
-    simulator_->updateShadowMapDrawableGroup();
-    simulator_->computeShadowMaps(0.01f,   // lightNearPlane
-                                  20.0f);  // lightFarPlane
-    simulator_->setShadowMapsToDrawables();
-  }
-
   printHelpText();
 }  // end Viewer::Viewer
 
@@ -1080,10 +1043,11 @@ void Viewer::initSimPostReconfigure() {
     }
   } else if (recomputeNavmesh_) {
     esp::nav::NavMeshSettings navMeshSettings;
-    navMeshSettings.agentHeight = agentConfig_.height;
-    navMeshSettings.agentRadius = agentConfig_.radius;
+    navMeshSettings.agentHeight = rgbSensorHeight;
+    navMeshSettings.agentRadius = 0.25;
+    navMeshSettings.includeStaticObjects = true;
     simulator_->recomputeNavMesh(*simulator_->getPathFinder().get(),
-                                 navMeshSettings, true);
+                                 navMeshSettings);
   } else if (!navmeshFilename_.empty()) {
     std::string navmeshFile = Cr::Utility::Path::join(
         *Corrade::Utility::Path::currentDirectory(), navmeshFilename_);
@@ -1091,16 +1055,23 @@ void Viewer::initSimPostReconfigure() {
       simulator_->getPathFinder()->loadNavMesh(navmeshFile);
     }
   }
-  // add selects a random initial state and sets up the default controls and
-  // step filter
-  simulator_->addAgent(agentConfig_);
 
   // Set up camera
   activeSceneGraph_ = &simulator_->getActiveSceneGraph();
-  defaultAgent_ = simulator_->getAgent(defaultAgentId_);
-  agentBodyNode_ = &defaultAgent_->node();
+  agentBodyNode_ = &activeSceneGraph_->getRootNode().createChild();
+  for (auto spec : sensorSpecs) {
+    // create global sensors
+    simulator_->addSensorToObject(esp::RIGID_STAGE_ID, spec);
+    // re-assign them to the proxy "agent" SceneNode
+    auto newSensor =
+        activeSceneGraph_->getRootNode().getNodeSensors().at(spec->uuid);
+    newSensor.get().node().setParent(agentBodyNode_);
+  }
   renderCamera_ = getAgentCamera().getRenderCamera();
+  // Refresh local simConfig_ to track results from scene load
+  simConfig_ = MM_->getSimulatorConfiguration();
   timeline_.start();
+  timeSinceLastSimulation_ = 0.0;
 }  // initSimPostReconfigure
 
 void Viewer::switchCameraType() {
@@ -1160,7 +1131,7 @@ void Viewer::saveAgentAndSensorTransformToFile() {
   }
 
   // update temporary save
-  savedAgentTransform_ = defaultAgent_->node().transformation();
+  savedAgentTransform_ = agentBodyNode_->transformation();
   savedSensorTransform_ = getAgentCamera().node().transformation();
 
   // update save in file system
@@ -1347,8 +1318,8 @@ void Viewer::loadAgentAndSensorTransformFromFile() {
     }
   }
 
-  defaultAgent_->node().setTransformation(*savedAgentTransform_);
-  for (const auto& p : defaultAgent_->node().getNodeSensors()) {
+  agentBodyNode_->setTransformation(*savedAgentTransform_);
+  for (const auto& p : agentBodyNode_->getNodeSensors()) {
     p.second.get().object().setTransformation(*savedSensorTransform_);
   }
   ESP_DEBUG()
@@ -1404,7 +1375,7 @@ void Viewer::buildTrajectoryVis() {
   int numClrs = (singleColorTrajectory_ ? 1 : rand() % 4 + 2);
   clrs.reserve(numClrs);
   for (int i = 0; i < numClrs; ++i) {
-    clrs.emplace_back(Mn::Color3{randomDirection()});
+    clrs.emplace_back(randomDirection());
   }
   // synthesize a name for asset based on color, radius, point count
   std::string trajObjName = Cr::Utility::formatString(
@@ -1438,98 +1409,6 @@ void Viewer::invertGravity() {
   const Mn::Vector3 invGravity = -1 * gravity;
   simulator_->setGravity(invGravity);
 }
-#ifdef ESP_BUILD_WITH_VHACD
-
-void Viewer::displayStageDistanceGradientField() {
-  // Temporary key event used for testing & visualizing Voxel Grid framework
-  std::shared_ptr<esp::geo::VoxelWrapper> stageVoxelization;
-  stageVoxelization = simulator_->getStageVoxelization();
-
-  // if the object hasn't been voxelized, do that and generate an SDF as
-  // well
-  !ESP_DEBUG();
-  if (stageVoxelization == nullptr) {
-    simulator_->createStageVoxelization(2000000);
-    stageVoxelization = simulator_->getStageVoxelization();
-    esp::geo::generateEuclideanDistanceSDF(stageVoxelization,
-                                           "ESignedDistanceField");
-  }
-  !ESP_DEBUG();
-
-  // generate a vector field for the SDF gradient
-  esp::geo::generateScalarGradientField(
-      stageVoxelization, "ESignedDistanceField", "GradientField");
-  // generate a mesh of the vector field with boolean isVectorField set to
-  // true
-  !ESP_DEBUG();
-
-  stageVoxelization->generateMesh("GradientField");
-
-  // draw the vector field
-  simulator_->setStageVoxelizationDraw(true, "GradientField");
-}
-
-void Viewer::iterateAndDisplaySignedDistanceField() {
-  // Temporary key event used for testing & visualizing Voxel Grid framework
-  std::shared_ptr<esp::geo::VoxelWrapper> stageVoxelization;
-  stageVoxelization = simulator_->getStageVoxelization();
-
-  // if the object hasn't been voxelized, do that and generate an SDF as
-  // well
-  if (stageVoxelization == nullptr) {
-    simulator_->createStageVoxelization(2000000);
-    stageVoxelization = simulator_->getStageVoxelization();
-    esp::geo::generateEuclideanDistanceSDF(stageVoxelization,
-                                           "ESignedDistanceField");
-  }
-
-  // Set the range of distances to render, and generate a mesh for this (18
-  // is set to be the max distance)
-  Mn::Vector3i dims = stageVoxelization->getVoxelGridDimensions();
-  int curDistanceVisualization = (voxelDistance % dims[0]);
-  /*sceneVoxelization->generateBoolGridFromFloatGrid("ESignedDistanceField",
-     "SDFSubset", curDistanceVisualization, curDistanceVisualization + 1);*/
-  stageVoxelization->generateSliceMesh("ESignedDistanceField",
-                                       curDistanceVisualization, -15.0f, 0.0f);
-  // Draw the voxel grid's slice
-  simulator_->setStageVoxelizationDraw(true, "ESignedDistanceField");
-}
-
-void Viewer::displayVoxelField(int objectID) {
-  // create a voxelization and get a pointer to the underlying VoxelWrapper
-  // class
-  unsigned int resolution = 2000000;
-  std::shared_ptr<esp::geo::VoxelWrapper> voxelWrapper;
-  if (objectID == -1) {
-    simulator_->createStageVoxelization(resolution);
-    voxelWrapper = simulator_->getStageVoxelization();
-  } else {
-    simulator_->createObjectVoxelization(objectID, resolution);
-    voxelWrapper = simulator_->getObjectVoxelization(objectID);
-  }
-
-  // turn off the voxel grid visualization for the last voxelized object
-  if (objectDisplayed == -1) {
-    simulator_->setStageVoxelizationDraw(false, "Boundary");
-  } else if (objectDisplayed >= 0) {
-    simulator_->setObjectVoxelizationDraw(false, objectDisplayed, "Boundary");
-  }
-
-  // Generate the mesh for the boundary voxel grid
-  voxelWrapper->generateMesh("Boundary");
-
-  esp::geo::generateEuclideanDistanceSDF(voxelWrapper, "ESignedDistanceField");
-
-  // visualizes the Boundary voxel grid
-  if (objectID == -1) {
-    simulator_->setStageVoxelizationDraw(true, "Boundary");
-  } else {
-    simulator_->setObjectVoxelizationDraw(true, objectID, "Boundary");
-  }
-
-  objectDisplayed = objectID;
-}
-#endif
 
 // generate random direction vectors:
 Mn::Vector3 Viewer::randomDirection() {
@@ -1557,7 +1436,6 @@ void Viewer::setSceneInstanceFromListAndShow(int nextSceneInstanceIDX) {
 
   renderCamera_ = nullptr;
   agentBodyNode_ = nullptr;
-  defaultAgent_ = nullptr;
   activeSceneGraph_ = nullptr;
 
   // close and reconfigure
@@ -1618,7 +1496,6 @@ void Viewer::setSensorVisID() {
       sensorVisID_);
 }  // Viewer::setSensorVisID
 
-float timeSinceLastSimulation = 0.0;
 void Viewer::drawEvent() {
   // Wrap profiler measurements around all methods to render images from
   // RenderCamera
@@ -1627,12 +1504,12 @@ void Viewer::drawEvent() {
                                    Mn::GL::FramebufferClear::Depth);
 
   // Agent actions should occur at a fixed rate per second
-  timeSinceLastSimulation += timeline_.previousFrameDuration();
-  int numAgentActions = timeSinceLastSimulation * agentActionsPerSecond;
+  timeSinceLastSimulation_ += timeline_.previousFrameDuration();
+  int numAgentActions = timeSinceLastSimulation_ * agentActionsPerSecond;
   moveAndLook(numAgentActions);
 
   // occasionally a frame will pass quicker than 1/60 seconds
-  if (timeSinceLastSimulation >= 1.0 / 60.0) {
+  if (timeSinceLastSimulation_ >= 1.0 / 60.0) {
     if (simulating_ || simulateSingleStep_) {
       // step physics at a fixed rate
       // In the interest of frame rate, only a single step is taken,
@@ -1645,7 +1522,7 @@ void Viewer::drawEvent() {
       }
     }
     // reset timeSinceLastSimulation, accounting for potential overflow
-    timeSinceLastSimulation = fmod(timeSinceLastSimulation, 1.0 / 60.0);
+    timeSinceLastSimulation_ = fmod(timeSinceLastSimulation_, 1.0 / 60.0);
   }
 
   uint32_t visibles = renderCamera_->getPreviousNumVisibleDrawables();
@@ -1666,7 +1543,7 @@ void Viewer::drawEvent() {
     // ONLY draw the content to the frame buffer but not immediately blit the
     // result to the default main buffer
     // (this is the reason we do not call displayObservation)
-    simulator_->drawObservation(defaultAgentId_, sensorVisID_);
+    simulator_->drawObservation(sensorVisID_);
 
     Mn::GL::Renderer::setDepthFunction(
         Mn::GL::Renderer::DepthFunction::LessOrEqual);
@@ -1682,7 +1559,7 @@ void Viewer::drawEvent() {
 
     visibles = renderCamera_->getPreviousNumVisibleDrawables();
     esp::gfx::RenderTarget* sensorRenderTarget =
-        simulator_->getRenderTarget(defaultAgentId_, sensorVisID_);
+        simulator_->getRenderTarget(sensorVisID_);
     CORRADE_ASSERT(sensorRenderTarget,
                    "Error in Viewer::drawEvent: sensor's rendering target "
                    "cannot be nullptr.", );
@@ -1707,92 +1584,105 @@ void Viewer::drawEvent() {
     sensorRenderTarget->blitRgbaToDefault();
   } else {
     // Depth Or Semantic, or Non-pinhole RGBA
-    simulator_->drawObservation(defaultAgentId_, sensorVisID_);
+    simulator_->drawObservation(sensorVisID_);
 
     esp::gfx::RenderTarget* sensorRenderTarget =
-        simulator_->getRenderTarget(defaultAgentId_, sensorVisID_);
+        simulator_->getRenderTarget(sensorVisID_);
     CORRADE_ASSERT(sensorRenderTarget,
                    "Error in Viewer::drawEvent: sensor's rendering target "
                    "cannot be nullptr.", );
 
     if (visualizeMode_ == VisualizeMode::Depth) {
-      simulator_->visualizeObservation(defaultAgentId_, sensorVisID_,
+      simulator_->visualizeObservation(sensorVisID_,
                                        1.0f / 512.0f,  // colorMapOffset
                                        1.0f / 12.0f);  // colorMapScale
     } else if (visualizeMode_ == VisualizeMode::Semantic) {
       Mn::GL::defaultFramebuffer.clear(Mn::GL::FramebufferClear::Color |
                                        Mn::GL::FramebufferClear::Depth);
-      simulator_->visualizeObservation(defaultAgentId_, sensorVisID_);
+      simulator_->visualizeObservation(sensorVisID_);
     }
     sensorRenderTarget->blitRgbaToDefault();
   }
 
-  // Immediately bind the main buffer back so that the "imgui" below can work
-  // properly
+  // Immediately bind the main buffer back
   Mn::GL::defaultFramebuffer.bind();
 
-  // Do not include ImGui content drawing in per frame profiler measurements
+  // Do not include text drawing in per frame profiler measurements
   profiler_.endFrame();
 
-  imgui_.newFrame();
-  ImGui::SetNextWindowPos(ImVec2(10, 10));
   if (showFPS_) {
-    ImGui::Begin("main", NULL,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
-                     ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::SetWindowFontScale(1.5);
-    ImGui::Text("%.1f FPS", Mn::Double(ImGui::GetIO().Framerate));
+    std::string text;
     uint32_t total = activeSceneGraph_->getDrawables().size();
-    ImGui::Text("%u drawables", total);
+    Cr::Utility::formatInto(
+        text, text.size(),
+        "{:.1f} FPS\n"
+        "{} drawables",
+        profiler_.isMeasurementAvailable(
+            Mn::DebugTools::FrameProfilerGL::Value::FrameTime)
+            ? 1.0e9 / profiler_.frameTimeMean()
+            : 0.0,
+        total);
     if (sensorMode_ == VisualSensorMode::Camera) {
-      ImGui::Text("%u culled", total - visibles);
+      Cr::Utility::formatInto(text, text.size(), ", {} culled",
+                              total - visibles);
     }
-    auto& cam = getAgentCamera();
+    text += '\n';
 
     switch (sensorMode_) {
-      case VisualSensorMode::Camera:
+      case VisualSensorMode::Camera: {
+        auto& cam = getAgentCamera();
         if (cam.getCameraType() == esp::sensor::SensorSubType::Orthographic) {
-          ImGui::Text("Orthographic camera sensor");
+          text += "Orthographic camera sensor\n";
         } else if (cam.getCameraType() == esp::sensor::SensorSubType::Pinhole) {
-          ImGui::Text("Pinhole camera sensor");
+          text += "Pinhole camera sensor\n";
         };
-        break;
+      } break;
       case VisualSensorMode::Fisheye:
-        ImGui::Text("Fisheye sensor");
+        text += "Fisheye sensor\n";
         break;
       case VisualSensorMode::Equirectangular:
-        ImGui::Text("Equirectangular sensor");
+        text += "Equirectangular sensor\n";
         break;
 
       default:
         break;
     }
-    ImGui::Text("%s", profiler_.statistics().c_str());
-    std::string modeText =
-        "Mouse Interaction Mode: " + mouseModeNames.at(mouseInteractionMode);
-    ImGui::Text("%s", modeText.c_str());
+    Cr::Utility::formatInto(text, text.size(),
+                            "{}\n"
+                            "Mouse Interaction Mode: {}\n",
+                            profiler_.statistics(),
+                            mouseModeNames.at(mouseInteractionMode));
+
     if (!semanticTag_.empty()) {
-      ImGui::Text("Semantic %s", semanticTag_.c_str());
+      Cr::Utility::formatInto(text, text.size(), "Semantic {}\n", semanticTag_);
     }
-    ImGui::End();
+
+    fontText_->render(text);
+
+    /* Set up renderer state for text rendering, and then reset that back again
+      after */
+    Mn::GL::Renderer::disable(Mn::GL::Renderer::Feature::DepthTest);
+    Mn::GL::Renderer::disable(Mn::GL::Renderer::Feature::FaceCulling);
+    Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::Blending);
+    Mn::GL::Renderer::setBlendFunction(
+        Mn::GL::Renderer::BlendFunction::One,
+        Mn::GL::Renderer::BlendFunction::OneMinusSourceAlpha);
+    Mn::GL::Renderer::setBlendEquation(Mn::GL::Renderer::BlendEquation::Add,
+                                       Mn::GL::Renderer::BlendEquation::Add);
+
+    fontShader_
+        .setTransformationProjectionMatrix(
+            Mn::Matrix3::projection(Mn::Vector2{windowSize()}) *
+            Mn::Matrix3::translation(Mn::Vector2{windowSize()} *
+                                         Mn::Vector2{-0.5f, 0.5f} +
+                                     Mn::Vector2{32, -32}))
+        .bindVectorTexture(fontGlyphCache_->texture())
+        .draw(fontText_->mesh());
+
+    Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::DepthTest);
+    Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::FaceCulling);
+    Mn::GL::Renderer::disable(Mn::GL::Renderer::Feature::Blending);
   }
-
-  /* Set appropriate states. If you only draw ImGui, it is sufficient to
-     just enable blending and scissor test in the constructor. */
-  Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::Blending);
-  Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::ScissorTest);
-  Mn::GL::Renderer::disable(Mn::GL::Renderer::Feature::FaceCulling);
-  Mn::GL::Renderer::disable(Mn::GL::Renderer::Feature::DepthTest);
-
-  imgui_.drawFrame();
-
-  /* Reset state. Only needed if you want to draw something else with
-     different state after. */
-
-  Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::DepthTest);
-  Mn::GL::Renderer::enable(Mn::GL::Renderer::Feature::FaceCulling);
-  Mn::GL::Renderer::disable(Mn::GL::Renderer::Feature::ScissorTest);
-  Mn::GL::Renderer::disable(Mn::GL::Renderer::Feature::Blending);
 
   swapBuffers();
   timeline_.nextFrame();
@@ -1805,48 +1695,63 @@ void Viewer::dispMetadataInfo() {  // display info report
               << dsInfoReport << "\nActive Dataset Report Details Done";
 }
 
+Mn::Vector3 Viewer::moveFilterFunc(const Mn::Vector3& start,
+                                   const Mn::Vector3& end,
+                                   bool allowSliding) {
+  auto pathfinder = simulator_->getPathFinder();
+  if (!pathfinder->isLoaded()) {
+    return end;
+  }
+  if (allowSliding) {
+    return pathfinder->tryStep(start, end);
+  }
+  return pathfinder->tryStepNoSliding(start, end);
+}
+
 void Viewer::moveAndLook(int repetitions) {
   for (int i = 0; i < repetitions; ++i) {
-    if (keysPressed[KeyEvent::Key::Left]) {
-      defaultAgent_->act("turnLeft");
-    }
-    if (keysPressed[KeyEvent::Key::Right]) {
-      defaultAgent_->act("turnRight");
-    }
-    if (keysPressed[KeyEvent::Key::Up]) {
-      defaultAgent_->act("lookUp");
-    }
-    if (keysPressed[KeyEvent::Key::Down]) {
-      defaultAgent_->act("lookDown");
-    }
-
     bool moved = false;
+    auto initialAgentPosition = agentBodyNode_->translation();
     if (keysPressed[KeyEvent::Key::A]) {
-      defaultAgent_->act("moveLeft");
+      agentBodyNode_->translateLocal(agentBodyNode_->transformation().right() *
+                                     -moveSensitivity);
       moved = true;
     }
     if (keysPressed[KeyEvent::Key::D]) {
-      defaultAgent_->act("moveRight");
+      agentBodyNode_->translateLocal(agentBodyNode_->transformation().right() *
+                                     moveSensitivity);
       moved = true;
     }
     if (keysPressed[KeyEvent::Key::S]) {
-      defaultAgent_->act("moveBackward");
+      agentBodyNode_->translateLocal(
+          agentBodyNode_->transformation().backward() * moveSensitivity);
       moved = true;
     }
     if (keysPressed[KeyEvent::Key::W]) {
-      defaultAgent_->act("moveForward");
+      agentBodyNode_->translateLocal(
+          agentBodyNode_->transformation().backward() * -moveSensitivity);
       moved = true;
     }
-    if (keysPressed[KeyEvent::Key::X]) {
-      defaultAgent_->act("moveDown");
-      moved = true;
-    }
-    if (keysPressed[KeyEvent::Key::Z]) {
-      defaultAgent_->act("moveUp");
-      moved = true;
+    if (keysPressed[KeyEvent::Key::X] || keysPressed[KeyEvent::Key::Z]) {
+      auto moveAmount = moveSensitivity;
+      if (keysPressed[KeyEvent::Key::Z]) {
+        moveAmount *= -1.0;
+      }
+      // apply the transformation to all sensors
+      for (auto& p : agentBodyNode_->getSubtreeSensors()) {
+        auto& sensorNode = p.second.get().node();
+        // apply X rotation to the sensors to pivot them up/down
+        sensorNode.translate(agentBodyNode_->transformation().up() *
+                             moveAmount);
+      }
     }
 
     if (moved) {
+      // do navmesh step filtering
+      agentBodyNode_->setTranslation(moveFilterFunc(
+          initialAgentPosition, agentBodyNode_->translation(),
+          true  // allow sliding
+          ));
       recAgentLocation();
     }
   }
@@ -1856,7 +1761,7 @@ void Viewer::moveAndLook(int repetitions) {
     // GRAB mode, move the constraint
     auto ray = renderCamera_->unproject(previousMousePoint);
     mouseGrabber_->updateTransform(
-        Mn::Matrix4::from(defaultAgent_->node().rotation().toMatrix(),
+        Mn::Matrix4::from(agentBodyNode_->rotation().toMatrix(),
                           renderCamera_->node().absoluteTranslation() +
                               ray.direction * mouseGrabber_->gripDepth));
   }
@@ -1879,37 +1784,36 @@ void Viewer::bindRenderTarget() {
 }
 
 void Viewer::viewportEvent(ViewportEvent& event) {
+  /* Recalculate the scaled framebuffer size based on new values coming from
+     the event */
+  scaledFramebufferSize_ = event.framebufferSize();
+  if ((Mn::Vector2{event.framebufferSize()} * event.dpiScaling() /
+       Mn::Vector2{event.windowSize()})
+          .max() >= quarterResolutionScalingLimit_)
+    scaledFramebufferSize_ /= 2;
+
   for (auto& it : agentBodyNode_->getSubtreeSensors()) {
     if (it.second.get().isVisualSensor()) {
       esp::sensor::VisualSensor& visualSensor =
           static_cast<esp::sensor::VisualSensor&>(it.second.get());
-      visualSensor.setResolution(event.framebufferSize()[1],
-                                 event.framebufferSize()[0]);
-      renderCamera_->setViewport(visualSensor.framebufferSize());
+      visualSensor.setResolution(scaledFramebufferSize_.y(),
+                                 scaledFramebufferSize_.x());
+      renderCamera_->setViewport(scaledFramebufferSize_);
       // before, here we will bind the render target, but now we defer it
       if (visualSensor.specification()->sensorSubType ==
           esp::sensor::SensorSubType::Fisheye) {
         auto spec = static_cast<esp::sensor::FisheyeSensorDoubleSphereSpec*>(
             visualSensor.specification().get());
 
-        // const auto viewportSize =
-        // Mn::GL::defaultFramebuffer.viewport().size();
-        const auto viewportSize = event.framebufferSize();
-        int size = viewportSize[0] < viewportSize[1] ? viewportSize[0]
-                                                     : viewportSize[1];
         // since the sensor is determined, sensor's focal length is fixed.
-        spec->principalPointOffset =
-            Mn::Vector2(viewportSize[0] / 2, viewportSize[1] / 2);
+        spec->principalPointOffset = Mn::Vector2{scaledFramebufferSize_} / 2.0f;
       }
     }
   }
   bindRenderTarget();
   Mn::GL::defaultFramebuffer.setViewport({{}, event.framebufferSize()});
 
-  imgui_.relayout(Mn::Vector2{event.windowSize()} / event.dpiScaling(),
-                  event.windowSize(), event.framebufferSize());
-
-  objectPickingHelper_->handleViewportChange(event.framebufferSize());
+  objectPickingHelper_->handleViewportChange(scaledFramebufferSize_);
 }
 
 void Viewer::createPickedObjectVisualizer(unsigned int objectId) {
@@ -2000,15 +1904,6 @@ void Viewer::mousePressEvent(MouseEvent& event) {
         esp::physics::RaycastResults raycastResults = simulator_->castRay(ray);
 
         if (raycastResults.hasHits()) {
-          // If VHACD is enabled, and Ctrl + Right Click is used, voxelized
-          // the object clicked on.
-#ifdef ESP_BUILD_WITH_VHACD
-          if (event.modifiers() & MouseEvent::Modifier::Ctrl) {
-            auto objID = raycastResults.hits[0].objectId;
-            displayVoxelField(objID);
-            return;
-          }
-#endif
           addPrimitiveObject();
 
           auto existingObjectIDs = simulator_->getExistingObjectIDs();
@@ -2038,8 +1933,7 @@ void Viewer::mousePressEvent(MouseEvent& event) {
           auto semanticObjects = semanticScene->objects();
           std::string sensorId = "semantic_camera";
           esp::sensor::Observation observation;
-          simulator_->getAgentObservation(defaultAgentId_, sensorId,
-                                          observation);
+          simulator_->getSensorObservation(sensorId, observation);
 
           uint32_t desiredIdx =
               (viewportPoint[0] +
@@ -2126,10 +2020,8 @@ void Viewer::mousePressEvent(MouseEvent& event) {
             constraintSettings.linkIdA = aoLink;
             constraintSettings.pivotA = objectPivot;
             constraintSettings.frameA =
-                objectFrame.toMatrix() *
-                defaultAgent_->node().rotation().toMatrix();
-            constraintSettings.frameB =
-                defaultAgent_->node().rotation().toMatrix();
+                objectFrame.toMatrix() * agentBodyNode_->rotation().toMatrix();
+            constraintSettings.frameB = agentBodyNode_->rotation().toMatrix();
             constraintSettings.pivotB = hitInfo.point;
             // by default use a point 2 point constraint
             if (event.button() == MouseEvent::Button::Right) {
@@ -2206,7 +2098,7 @@ void Viewer::mouseScrollEvent(MouseScrollEvent& event) {
       auto ray = renderCamera_->unproject(viewportPoint);
       mouseGrabber_->gripDepth += scrollDelta;
       mouseGrabber_->updateTransform(
-          Mn::Matrix4::from(defaultAgent_->node().rotation().toMatrix(),
+          Mn::Matrix4::from(agentBodyNode_->rotation().toMatrix(),
                             renderCamera_->node().absoluteTranslation() +
                                 ray.direction * mouseGrabber_->gripDepth));
     }
@@ -2223,21 +2115,22 @@ void Viewer::mouseMoveEvent(MouseMoveEvent& event) {
   auto viewportPoint = getMousePosition(event.position());
   if (mouseInteractionMode == MouseInteractionMode::LOOK) {
     const Mn::Vector2i delta = event.relativePosition();
-    auto& controls = *defaultAgent_->getControls().get();
-    controls(*agentBodyNode_, "turnRight", delta.x());
+    // apply Y rotation to the "agent" node to turn it
+    agentBodyNode_->rotateYLocal(Magnum::Deg(-delta.x()));
+    agentBodyNode_->setRotation(agentBodyNode_->rotation().normalized());
     // apply the transformation to all sensors
     for (auto& p : agentBodyNode_->getSubtreeSensors()) {
-      controls(p.second.get().object(),  // SceneNode
-               "lookDown",               // action name
-               delta.y(),                // amount
-               false);                   // applyFilter
+      auto& sensorNode = p.second.get().node();
+      // apply X rotation to the sensors to pivot them up/down
+      sensorNode.rotateXLocal(Magnum::Deg(-delta.y()));
+      sensorNode.setRotation(sensorNode.rotation().normalized());
     }
   } else if (mouseInteractionMode == MouseInteractionMode::GRAB &&
              mouseGrabber_ != nullptr) {
     // GRAB mode, move the constraint
     auto ray = renderCamera_->unproject(viewportPoint);
     mouseGrabber_->updateTransform(
-        Mn::Matrix4::from(defaultAgent_->node().rotation().toMatrix(),
+        Mn::Matrix4::from(agentBodyNode_->rotation().toMatrix(),
                           renderCamera_->node().absoluteTranslation() +
                               ray.direction * mouseGrabber_->gripDepth));
   }
@@ -2361,9 +2254,7 @@ void Viewer::keyPressEvent(KeyEvent& event) {
     case KeyEvent::Key::B: {
       // toggle bounding box on objects
       drawObjectBBs = !drawObjectBBs;
-      for (auto id : simulator_->getExistingObjectIDs()) {
-        simulator_->setObjectBBDraw(drawObjectBBs, id);
-      }
+      // TODO: do this with debug drawing instead
     } break;
     case KeyEvent::Key::C:
       showFPS_ = !showFPS_;
@@ -2427,33 +2318,66 @@ void Viewer::keyPressEvent(KeyEvent& event) {
       bool fixedBase = bool(event.modifiers() & MouseEvent::Modifier::Alt);
 
       // add an ArticulatedObject from provided filepath
-      std::string urdfFilepath;
+      std::string ArtObjConfigFilepath;
       if (event.modifiers() & MouseEvent::Modifier::Shift &&
-          !cachedURDF_.empty()) {
+          !cachedAOConfig_.empty()) {
         // quick-reload the most recently loaded URDF
-        ESP_DEBUG() << "URDF quick-reload: " << cachedURDF_;
-        urdfFilepath = cachedURDF_;
+        ESP_WARNING() << "Articulated Object config quick-reload: "
+                      << cachedAOConfig_;
+        ArtObjConfigFilepath = cachedAOConfig_;
       } else {
-        ESP_DEBUG() << "Load URDF: provide a URDF filepath.";
-        std::cin >> urdfFilepath;
+        ESP_WARNING()
+            << "Load URDF or ao_config.json : provide an appropriate filepath.";
+        std::cin >> ArtObjConfigFilepath;
       }
 
-      if (urdfFilepath.empty()) {
-        ESP_DEBUG() << "... no input provided. Aborting.";
-      } else if (!Cr::Utility::String::endsWith(urdfFilepath, ".urdf") &&
-                 !Cr::Utility::String::endsWith(urdfFilepath, ".URDF")) {
-        ESP_DEBUG() << "... input is not a URDF. Aborting.";
-      } else if (Cr::Utility::Path::exists(urdfFilepath)) {
-        // cache the file for quick-reload with SHIFT-T
-        cachedURDF_ = urdfFilepath;
-        auto aom = simulator_->getArticulatedObjectManager();
-        auto ao = aom->addArticulatedObjectFromURDF(urdfFilepath, fixedBase,
-                                                    1.0, 1.0, true);
-        ao->setTranslation(
-            defaultAgent_->node().transformation().transformPoint(
-                {0, 1.0, -1.5}));
+      if (ArtObjConfigFilepath.empty()) {
+        ESP_WARNING() << "... no input provided. Aborting.";
+      } else if (!Cr::Utility::Path::exists(ArtObjConfigFilepath)) {
+        ESP_WARNING() << "... input file not found. Aborting.";
       } else {
-        ESP_DEBUG() << "... input file not found. Aborting.";
+        // file exists
+        const auto compStr =
+            Cr::Utility::String::lowercase(ArtObjConfigFilepath);
+        if (!(Cr::Utility::String::endsWith(compStr, ".urdf")) &&
+            !(Cr::Utility::String::endsWith(compStr, ".ao_config.json"))) {
+          // Not understood format
+          ESP_WARNING() << "... input is not a supported articulated object "
+                           "configuration file. Aborting.";
+        } else {
+          // cache the file for quick-reload with SHIFT-T
+          cachedAOConfig_ = ArtObjConfigFilepath;
+
+          auto aom = simulator_->getArticulatedObjectManager();
+
+          std::shared_ptr<esp::physics::ManagedArticulatedObject> ao;
+          // Use appropriate method based on whether being called with urdf file
+          // or ao_config.json
+          if (Cr::Utility::String::endsWith(compStr, ".urdf")) {
+            ao = aom->addArticulatedObjectFromURDF(
+                ArtObjConfigFilepath, fixedBase, 1.0, 1.0, true, false, false,
+                simConfig_.sceneLightSetupKey);
+          } else {
+            auto aoAttribMgr = MM_->getAOAttributesManager();
+            // Retrieve loaded template
+            auto artObjAttributes =
+                aoAttribMgr->getObjectCopyByHandle(ArtObjConfigFilepath);
+            // If not present then load/create template
+            if (!artObjAttributes) {
+              artObjAttributes =
+                  aoAttribMgr->createObject(ArtObjConfigFilepath, false);
+            }
+            artObjAttributes->setBaseType(fixedBase ? "fixed" : "free");
+            // Register loaded/modified ao attributes
+            aoAttribMgr->registerObject(artObjAttributes,
+                                        artObjAttributes->getHandle(), true);
+
+            ao = aom->addArticulatedObjectByHandle(
+                ArtObjConfigFilepath, false, simConfig_.sceneLightSetupKey);
+          }
+          ao->setTranslation(
+              agentBodyNode_->transformation().transformPoint({0, 1.0, -1.5}));
+        }
       }
     } break;
     case KeyEvent::Key::L: {
@@ -2471,21 +2395,6 @@ void Viewer::keyPressEvent(KeyEvent& event) {
     case KeyEvent::Key::V:
       invertGravity();
       break;
-    case KeyEvent::Key::K: {
-#ifdef ESP_BUILD_WITH_VHACD
-      iterateAndDisplaySignedDistanceField();
-      // Increase the distance visualized for next time (Pressing L
-      // repeatedly will visualize different distances)
-      voxelDistance++;
-#endif
-      break;
-    }
-    case KeyEvent::Key::G: {
-#ifdef ESP_BUILD_WITH_VHACD
-      displayStageDistanceGradientField();
-#endif
-      break;
-    }
     case KeyEvent::Key::F: {
 #ifdef ESP_BUILD_WITH_AUDIO
       // Add an audio source

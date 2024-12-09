@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -82,7 +82,7 @@ void AudioSensor::reset() {
   impulseResponse_.clear();
 }
 
-void AudioSensor::setAudioSourceTransform(const vec3f& sourcePos) {
+void AudioSensor::setAudioSourceTransform(const Magnum::Vector3& sourcePos) {
   ESP_DEBUG() << logHeader_
               << "Setting the audio source position : " << sourcePos << "]";
 
@@ -99,8 +99,9 @@ void AudioSensor::setAudioSourceTransform(const vec3f& sourcePos) {
   }
 }
 
-void AudioSensor::setAudioListenerTransform(const vec3f& agentPos,
-                                            const vec4f& agentRotQuat) {
+void AudioSensor::setAudioListenerTransform(
+    const Magnum::Vector3& agentPos,
+    const Magnum::Vector4& agentRotQuat) {
   ESP_DEBUG() << logHeader_ << "Setting the agent transform : position ["
               << agentPos << "], rotQuat[" << agentRotQuat << "]";
 

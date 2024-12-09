@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -69,15 +69,15 @@ class AudioSensor : public Sensor {
    * @brief Set the audio source transform
    * @param sourcePos = vec3 source position
    * */
-  void setAudioSourceTransform(const vec3f& sourcePos);
+  void setAudioSourceTransform(const Magnum::Vector3& sourcePos);
 
   /**
    * @brief Set the audio listener position and orientation
    * @param agentPos = vec3 agent position
    * @param agentRotQuat = vec4 agent rotation quaternion
    * */
-  void setAudioListenerTransform(const vec3f& agentPos,
-                                 const vec4f& agentRotQuat);
+  void setAudioListenerTransform(const Magnum::Vector3& agentPos,
+                                 const Magnum::Vector4& agentRotQuat);
 
   /**
    * @brief Run the audio simulation. This will run the RLRAudioPropagation code

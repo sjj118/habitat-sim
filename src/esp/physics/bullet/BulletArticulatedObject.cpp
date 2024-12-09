@@ -1,13 +1,15 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
 // Construction code adapted from Bullet3/examples/
 
 #include "BulletArticulatedObject.h"
+#include "BulletArticulatedLink.h"
 #include "BulletDynamics/Featherstone/btMultiBodyLinkCollider.h"
 #include "BulletPhysicsManager.h"
 #include "BulletURDFImporter.h"
+#include "esp/metadata/attributes/ArticulatedObjectAttributes.h"
 #include "esp/scene/SceneNode.h"
 
 namespace Mn = Magnum;
@@ -63,65 +65,38 @@ BulletArticulatedObject::~BulletArticulatedObject() {
   }
 
   // remove joint limit constraints
-  for (auto& jlIter : jointLimitConstraints) {
+  for (auto& jlIter : jointLimitConstraints_) {
     bWorld_->removeMultiBodyConstraint(jlIter.second.con);
     delete jlIter.second.con;
   }
 }
 
 void BulletArticulatedObject::initializeFromURDF(
+    const std::shared_ptr<metadata::attributes::ArticulatedObjectAttributes>&
+        initAttributes,
     URDFImporter& urdfImporter,
     const Mn::Matrix4& worldTransform,
     scene::SceneNode* physicsNode) {
-  Mn::Matrix4 rootTransformInWorldSpace{worldTransform};
+  // set semantic ID
+  node().setSemanticId(initAttributes->getSemanticId());
 
   BulletURDFImporter& u2b = *(static_cast<BulletURDFImporter*>(&urdfImporter));
+
+  Mn::Matrix4 rootTransformInWorldSpace{worldTransform};
 
   auto urdfModel = u2b.getModel();
 
   // cache the global scaling from the source model
   globalScale_ = urdfModel->getGlobalScaling();
+  setScale(Mn::Vector3{globalScale_, globalScale_, globalScale_});
 
-  int urdfLinkIndex = u2b.getRootLinkIndex();
-  // int rootIndex = u2b.getRootLinkIndex();
-
-  bool recursive = (u2b.flags & CUF_MAINTAIN_LINK_ORDER) == 0;
-
-  if (recursive) {
-    // NOTE: recursive path only
-    u2b.convertURDF2BulletInternal(urdfLinkIndex, rootTransformInWorldSpace,
-                                   bWorld_.get(), linkCompoundShapes_,
-                                   linkChildShapes_, recursive);
-  } else {
-    std::vector<Mn::Matrix4> parentTransforms;
-    parentTransforms.resize(urdfLinkIndex + 1);
-    parentTransforms[urdfLinkIndex] = rootTransformInWorldSpace;
-    std::vector<childParentIndex> allIndices;
-
-    u2b.getAllIndices(urdfLinkIndex, -1, allIndices);
-    std::sort(allIndices.begin(), allIndices.end(),
-              [](const childParentIndex& a, const childParentIndex& b) {
-                return a.m_index < b.m_index;
-              });
-
-    if (allIndices.size() + 1 > parentTransforms.size()) {
-      parentTransforms.resize(allIndices.size() + 1);
-    }
-    for (size_t i = 0; i < allIndices.size(); ++i) {
-      int urdfLinkIndex = allIndices[i].m_index;
-      int parentIndex = allIndices[i].m_parentIndex;
-      Mn::Matrix4 parentTr = parentIndex >= 0 ? parentTransforms[parentIndex]
-                                              : rootTransformInWorldSpace;
-      Mn::Matrix4 tr = u2b.convertURDF2BulletInternal(
-          urdfLinkIndex, parentTr, bWorld_.get(), linkCompoundShapes_,
-          linkChildShapes_, recursive);
-      parentTransforms[urdfLinkIndex] = tr;
-    }
-  }
+  u2b.convertURDFToBullet(rootTransformInWorldSpace, bWorld_.get(),
+                          linkCompoundShapes_, linkChildShapes_);
 
   if (u2b.cache->m_bulletMultiBody) {
+    int urdfLinkIndex = u2b.getRootLinkIndex();
     btMultiBody* mb = u2b.cache->m_bulletMultiBody;
-    jointLimitConstraints = u2b.cache->m_jointLimitConstraints;
+    jointLimitConstraints_ = u2b.cache->m_jointLimitConstraints;
 
     mb->setHasSelfCollision((u2b.flags & CUF_USE_SELF_COLLISION) !=
                             0);  // NOTE: default no
@@ -172,9 +147,11 @@ void BulletArticulatedObject::initializeFromURDF(
         }
         linkObject = baseLink_.get();
       }
+      linkObject->initializeArticulatedLink(urdfLink->m_name, getScale());
       linkObject->linkName = urdfLink->m_name;
+      linkNamesToIDs_[linkObject->linkName] = bulletLinkIx;
 
-      linkObject->node().setType(esp::scene::SceneNodeType::OBJECT);
+      linkObject->node().setType(esp::scene::SceneNodeType::Object);
     }
 
     // Build damping motors
@@ -190,12 +167,13 @@ void BulletArticulatedObject::initializeFromURDF(
         createJointMotor(linkIx, settings);
       }
     }
-    // set user config attributes from model.
-    setUserAttributes(urdfModel->getUserConfiguration());
-
     // in case the base transform is not zero by default
     syncPose();
   }
+  // set user config and initialization attributes
+  setUserAttributes(initAttributes->getUserConfiguration());
+  setMarkerSets(initAttributes->getMarkerSetsConfiguration());
+  objInitAttributes_ = initAttributes;
 }
 
 void BulletArticulatedObject::constructStaticRigidBaseObject() {
@@ -256,41 +234,28 @@ void BulletArticulatedObject::updateNodes(bool force) {
   }
 }
 
-////////////////////////////
-// BulletArticulatedLink
-////////////////////////////
-
 std::shared_ptr<metadata::attributes::SceneAOInstanceAttributes>
 BulletArticulatedObject::getCurrentStateInstanceAttr() {
   // get mutable copy of initialization SceneAOInstanceAttributes for this AO
   auto sceneArtObjInstanceAttr =
       ArticulatedObject::getCurrentStateInstanceAttr();
   if (!sceneArtObjInstanceAttr) {
-    // if no scene instance attributes specified, no initial state is set
+    // if no Scene Instance Attributes specified, no initial state is set
     return nullptr;
   }
   sceneArtObjInstanceAttr->setAutoClampJointLimits(autoClampJointLimits_);
 
-  const std::vector<float> jointPos = getJointPositions();
-  int i = 0;
-  for (const float& v : jointPos) {
-    const std::string key = Cr::Utility::formatString("joint_{:.02d}", i++);
-    sceneArtObjInstanceAttr->addInitJointPoseVal(key, v);
-  }
+  sceneArtObjInstanceAttr->setInitJointPose(getJointPositions());
 
-  const std::vector<float> jointVels = getJointVelocities();
-  i = 0;
-  for (const float& v : jointVels) {
-    const std::string key = Cr::Utility::formatString("joint_{:.02d}", i++);
-    sceneArtObjInstanceAttr->addInitJointVelocityVal(key, v);
-  }
+  sceneArtObjInstanceAttr->setInitJointVelocities(getJointVelocities());
+
   return sceneArtObjInstanceAttr;
 }  // BulletArticulatedObject::getCurrentStateInstanceAttr
 
 void BulletArticulatedObject::resetStateFromSceneInstanceAttr() {
   auto sceneObjInstanceAttr = getInitObjectInstanceAttr();
   if (!sceneObjInstanceAttr) {
-    // if no scene instance attributes specified, no initial state is set
+    // if no Scene Instance Attributes specified, no initial state is set
     return;
   }
   // Set whether dofs should be clamped to limits before phys step
@@ -311,43 +276,58 @@ void BulletArticulatedObject::resetStateFromSceneInstanceAttr() {
   if (attrObjMotionType != physics::MotionType::UNDEFINED) {
     setMotionType(attrObjMotionType);
   }
-  // set initial joint positions
-  // get array of existing joint dofs
+
+  // initially set positions to zero (or identity quaternion for spherical
+  // joints)
+  int posCount = 0;
+  // init unit quat
+  float quat_init[] = {0, 0, 0, 1};
+  for (int i = 0; i < btMultiBody_->getNumLinks(); ++i) {
+    auto& link = btMultiBody_->getLink(i);
+    if (link.m_posVarCount > 0) {
+      // feed the unit quat to all setters, only spherical joints will hit the
+      // one at the end
+      btMultiBody_->setJointPosMultiDof(i, const_cast<float*>(quat_init));
+      posCount += link.m_posVarCount;
+    }
+  }
+
+  // set initial joint positions from instance config if applicable
   std::vector<float> aoJointPose = getJointPositions();
   // get instance-specified initial joint positions
   const auto& initJointPos = sceneObjInstanceAttr->getInitJointPose();
-  // map instance vals into
-  size_t idx = 0;
-  for (const auto& elem : initJointPos) {
-    if (idx >= aoJointPose.size()) {
+  for (size_t i = 0; i < initJointPos.size(); ++i) {
+    if (i >= aoJointPose.size()) {
       ESP_WARNING() << "Attempting to specify more initial joint poses than "
                        "exist in articulated object"
                     << sceneObjInstanceAttr->getHandle() << ", so skipping";
       break;
     }
-    aoJointPose[idx++] = elem.second;
+    aoJointPose[i] = initJointPos[i];
   }
   setJointPositions(aoJointPose);
 
+  // first clear all joint vels
+  setJointVelocities(std::vector<float>(size_t(btMultiBody_->getNumDofs())));
   // set initial joint velocities
-  // get array of existing joint vel dofs
   std::vector<float> aoJointVels = getJointVelocities();
   // get instance-specified initial joint velocities
-  const std::map<std::string, float>& initJointVel =
+  std::vector<float> initJointVels =
       sceneObjInstanceAttr->getInitJointVelocities();
-  idx = 0;
-  for (const auto& elem : initJointVel) {
-    if (idx >= aoJointVels.size()) {
+  for (size_t i = 0; i < initJointVels.size(); ++i) {
+    if (i >= aoJointVels.size()) {
       ESP_WARNING()
           << "Attempting to specify more initial joint velocities than "
              "exist in articulated object"
           << sceneObjInstanceAttr->getHandle() << ", so skipping";
       break;
     }
-    aoJointVels[idx++] = elem.second;
+    aoJointVels[i] = initJointVels[i];
   }
-
   setJointVelocities(aoJointVels);
+
+  // clear any forces
+  setJointForces(std::vector<float>(size_t(btMultiBody_->getNumDofs())));
 
 }  // BulletArticulatedObject::resetStateFromSceneInstanceAttr
 
@@ -519,8 +499,8 @@ BulletArticulatedObject::getJointPositionLimits() {
 
   int posCount = 0;
   for (int i = 0; i < btMultiBody_->getNumLinks(); ++i) {
-    auto jntLimitCnstrntIter = jointLimitConstraints.find(i);
-    if (jntLimitCnstrntIter != jointLimitConstraints.end()) {
+    auto jntLimitCnstrntIter = jointLimitConstraints_.find(i);
+    if (jntLimitCnstrntIter != jointLimitConstraints_.end()) {
       // a joint limit constraint exists for this link's parent joint
       lowerLimits[posCount] = jntLimitCnstrntIter->second.lowerLimit;
       upperLimits[posCount] = jntLimitCnstrntIter->second.upperLimit;
@@ -598,12 +578,28 @@ void BulletArticulatedObject::reset() {
   btMultiBody_->clearForcesAndTorques();
 }
 
+void BulletArticulatedObject::setCollisionObjectsActivateState(
+    bool activate) const {
+  if (activate) {
+    btMultiBody_->getBaseCollider()->activate();
+    for (int i = 0; i < btMultiBody_->getNumLinks(); ++i) {
+      btMultiBody_->getLinkCollider(i)->activate();
+    }
+  } else {
+    btMultiBody_->getBaseCollider()->setActivationState(WANTS_DEACTIVATION);
+    for (int i = 0; i < btMultiBody_->getNumLinks(); ++i) {
+      btMultiBody_->getLinkCollider(i)->setActivationState(WANTS_DEACTIVATION);
+    }
+  }
+}
+
 void BulletArticulatedObject::setActive(bool active) {
   if (!active) {
     btMultiBody_->goToSleep();
   } else {
     btMultiBody_->wakeUp();
   }
+  setCollisionObjectsActivateState(active);
 }
 
 bool BulletArticulatedObject::isActive() const {
@@ -643,8 +639,8 @@ void BulletArticulatedObject::clampJointLimits() {
 
   int dofCount = 0;
   for (int i = 0; i < btMultiBody_->getNumLinks(); ++i) {
-    auto jntLimitCnstrntIter = jointLimitConstraints.find(i);
-    if (jntLimitCnstrntIter != jointLimitConstraints.end()) {
+    auto jntLimitCnstrntIter = jointLimitConstraints_.find(i);
+    if (jntLimitCnstrntIter != jointLimitConstraints_.end()) {
       // a joint limit constraint exists for this link
       // position clamping:
       if (pose[dofCount] <
@@ -702,6 +698,10 @@ void BulletArticulatedObject::overrideCollisionGroup(CollisionGroup group) {
 }
 
 void BulletArticulatedObject::updateKinematicState() {
+  if (!isActive()) {
+    // activate if not already active and kinematically updated
+    setActive(true);
+  }
   btMultiBody_->forwardKinematics(scratch_q_, scratch_m_);
   btMultiBody_->updateCollisionObjectWorldTransforms(scratch_q_, scratch_m_);
   // Need to update the aabbs manually also for broadphase collision detection

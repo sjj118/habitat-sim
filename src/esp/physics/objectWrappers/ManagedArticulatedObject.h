@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -24,6 +24,23 @@ class ManagedArticulatedObject
       : AbstractManagedPhysicsObject<esp::physics::ArticulatedObject>(
             classKey) {}
 
+  /**
+   * @brief Get a copy of the template attributes describing the initial state
+   * of this articulated object. These attributes have the combination of date
+   * from the original articulated object attributes and specific instance
+   * attributes used to create this articulated object. Note : values will
+   * reflect both sources, and should not be saved to disk as articulated object
+   * attributes, since instance attribute modifications will still occur on
+   * subsequent loads
+   */
+  std::shared_ptr<metadata::attributes::ArticulatedObjectAttributes>
+  getInitializationAttributes() const {
+    if (auto sp = this->getObjectReference()) {
+      return sp->getInitializationAttributes();
+    }
+    return nullptr;
+  }  // getInitializationAttributes()
+
   float getGlobalScale() const {
     if (auto sp = getObjectReference()) {
       return sp->getGlobalScale();
@@ -31,7 +48,7 @@ class ManagedArticulatedObject
     return 1.0;
   }
 
-  scene::SceneNode* getLinkSceneNode(int linkId = -1) const {
+  scene::SceneNode* getLinkSceneNode(int linkId = BASELINK_ID) const {
     if (auto sp = getObjectReference()) {
       return &const_cast<scene::SceneNode&>(sp->getLinkSceneNode(linkId));
     }
@@ -39,7 +56,7 @@ class ManagedArticulatedObject
   }
 
   std::vector<scene::SceneNode*> getLinkVisualSceneNodes(
-      int linkId = -1) const {
+      int linkId = BASELINK_ID) const {
     if (auto sp = getObjectReference()) {
       return sp->getLinkVisualSceneNodes(linkId);
     }
@@ -56,7 +73,7 @@ class ManagedArticulatedObject
     if (auto sp = getObjectReference()) {
       return sp->getNumLinks();
     }
-    return -1;
+    return ID_UNDEFINED;
   }
 
   std::vector<int> getLinkIds() const {
@@ -66,9 +83,30 @@ class ManagedArticulatedObject
     return {};
   }
 
+  std::vector<int> getLinkIdsWithBase() const {
+    if (auto sp = getObjectReference()) {
+      return sp->getLinkIdsWithBase();
+    }
+    return {};
+  }
+
+  int getLinkIdFromName(const std::string& _name) const {
+    if (auto sp = getObjectReference()) {
+      return sp->getLinkIdFromName(_name);
+    }
+    return ID_UNDEFINED;
+  }
+
   std::unordered_map<int, int> getLinkObjectIds() const {
     if (auto sp = getObjectReference()) {
       return sp->getLinkObjectIds();
+    }
+    return {};
+  }
+
+  std::unordered_map<int, int> getLinkIdsToObjectIds() const {
+    if (auto sp = getObjectReference()) {
+      return sp->getLinkIdsToObjectIds();
     }
     return {};
   }
@@ -199,7 +237,7 @@ class ManagedArticulatedObject
     if (auto sp = getObjectReference()) {
       return sp->getLinkDoFOffset(linkId);
     }
-    return -1;
+    return ID_UNDEFINED;
   }
 
   int getLinkNumDoFs(int linkId) const {
@@ -213,7 +251,7 @@ class ManagedArticulatedObject
     if (auto sp = getObjectReference()) {
       return sp->getLinkJointPosOffset(linkId);
     }
-    return -1;
+    return ID_UNDEFINED;
   }
 
   int getLinkNumJointPos(int linkId) const {

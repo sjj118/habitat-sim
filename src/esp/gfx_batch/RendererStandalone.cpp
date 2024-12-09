@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -11,20 +11,21 @@
 #include <Magnum/GL/Renderbuffer.h>
 #include <Magnum/GL/RenderbufferFormat.h>
 #include <Magnum/Image.h>
+#include <Magnum/ImageView.h>
 #include <Magnum/PixelFormat.h>
 
-#if defined(CORRADE_TARGET_APPLE)
+#ifdef MAGNUM_TARGET_EGL
+#include <Magnum/Platform/WindowlessEglApplication.h>
+#elif defined(CORRADE_TARGET_APPLE)
 #include <Magnum/Platform/WindowlessCglApplication.h>
-#elif defined(CORRADE_TARGET_EMSCRIPTEN)
-#include <Magnum/Platform/WindowlessEglApplication.h>
 #elif defined(CORRADE_TARGET_UNIX)
-#ifdef ESP_BUILD_EGL_SUPPORT
-#include <Magnum/Platform/WindowlessEglApplication.h>
-#else
+/* Mainly for builds with external Magnum that might not have TARGET_EGL
+   enabled. */
 #include <Magnum/Platform/WindowlessGlxApplication.h>
-#endif
 #elif defined(CORRADE_TARGET_WINDOWS)
 #include <Magnum/Platform/WindowlessWglApplication.h>
+#else
+#error unsupported platform
 #endif
 
 #ifdef ESP_BUILD_WITH_CUDA
@@ -62,6 +63,7 @@ RendererStandaloneConfiguration& RendererStandaloneConfiguration::setFlags(
 }
 
 struct RendererStandalone::State {
+  RendererStandaloneFlags flags;
   Mn::Platform::WindowlessGLContext context;
   Mn::Platform::GLContext magnumContext{Mn::NoCreate};
   Mn::GL::Renderbuffer color{Mn::NoCreate}, depth{Mn::NoCreate};
@@ -74,16 +76,18 @@ struct RendererStandalone::State {
 #endif
 
   explicit State(const RendererStandaloneConfiguration& configuration)
-      : context{Mn::Platform::WindowlessGLContext::Configuration{}
-#ifdef ESP_BUILD_EGL_SUPPORT
-                    .setCudaDevice(configuration.state->cudaDevice)
+      : flags{configuration.state->flags}, context {
+    Mn::Platform::WindowlessGLContext::Configuration {}
+#if defined(MAGNUM_TARGET_EGL)
+    .setCudaDevice(configuration.state->cudaDevice)
 #endif
-                    .addFlags(configuration.state->flags &
-                                      RendererStandaloneFlag::QuietLog
-                                  ? Mn::Platform::WindowlessGLContext::
-                                        Configuration::Flag::QuietLog
-                                  : Mn::Platform::WindowlessGLContext::
-                                        Configuration::Flags{})} {
+        .addFlags(
+            configuration.state->flags & RendererStandaloneFlag::QuietLog
+                ? Mn::Platform::WindowlessGLContext::Configuration::Flag::
+                      QuietLog
+                : Mn::Platform::WindowlessGLContext::Configuration::Flags{})
+  }
+  {
     context.makeCurrent();
     magnumContext.create(Mn::GL::Context::Configuration{}.addFlags(
         configuration.state->flags & RendererStandaloneFlag::QuietLog
@@ -131,9 +135,13 @@ RendererStandalone::RendererStandalone(
 }
 
 RendererStandalone::~RendererStandalone() {
-  /* Yup, shitty, but as we hold the GL context we can't let any GL resources
-     to be destructed after our destructor. Better ideas? */
+  /* As we hold the GL context, GL resources have to be destructed before this
+   * destructor. */
   Renderer::destroy();
+}
+
+RendererStandaloneFlags RendererStandalone::standaloneFlags() const {
+  return state_->flags;
 }
 
 Mn::PixelFormat RendererStandalone::colorFramebufferFormat() const {
@@ -157,11 +165,40 @@ Mn::Image2D RendererStandalone::colorImage() {
                                   colorFramebufferFormat());
 }
 
+void RendererStandalone::colorImageInto(const Magnum::Range2Di& rectangle,
+                                        const Mn::MutableImageView2D& image) {
+  /* Deliberately not checking that image.format() == colorFramebufferFormat()
+     in order to allow for pixel format by the driver (such as RGBA to RGB) */
+  CORRADE_ASSERT(rectangle.max() <= tileCount() * tileSize(),
+                 "RendererStandalone::colorImageInto():"
+                     << rectangle << "doesn't fit in a size of"
+                     << tileCount() * tileSize(), );
+  CORRADE_ASSERT(image.size() == rectangle.size(),
+                 "RendererStandalone::colorImageInto(): expected image size of"
+                     << rectangle.size() << "pixels but got" << image.size(), );
+  return state_->framebuffer.read(rectangle, image);
+}
+
 Mn::Image2D RendererStandalone::depthImage() {
   /* Not using state_->framebuffer.viewport() as it's left pointing to whatever
      tile was rendered last */
   return state_->framebuffer.read({{}, tileCount() * tileSize()},
                                   depthFramebufferFormat());
+}
+
+void RendererStandalone::depthImageInto(const Magnum::Range2Di& rectangle,
+                                        const Mn::MutableImageView2D& image) {
+  /* Deliberately not checking that image.format() == depthFramebufferFormat()
+     in order to allow for pixel format by the driver (such as 24-bit to 32-bit
+     float) */
+  CORRADE_ASSERT(rectangle.max() <= tileCount() * tileSize(),
+                 "RendererStandalone::depthImageInto():"
+                     << rectangle << "doesn't fit in a size of"
+                     << tileCount() * tileSize(), );
+  CORRADE_ASSERT(image.size() == rectangle.size(),
+                 "RendererStandalone::depthImageInto(): expected image size of"
+                     << rectangle.size() << "pixels but got" << image.size(), );
+  return state_->framebuffer.read(rectangle, image);
 }
 
 #ifdef ESP_BUILD_WITH_CUDA

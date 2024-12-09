@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -15,15 +15,18 @@ RigidObject::RigidObject(scene::SceneNode* rigidBodyNode,
 
 bool RigidObject::initialize(
     metadata::attributes::AbstractObjectAttributes::ptr initAttributes) {
-  if (initializationAttributes_ != nullptr) {
+  if (objInitAttributes_ != nullptr) {
     ESP_ERROR() << "Cannot initialize a RigidObject more than once";
     return false;
   }
 
+  setScale(initAttributes->getScale());
+
   // save the copy of the template used to create the object at initialization
   // time
   setUserAttributes(initAttributes->getUserConfiguration());
-  initializationAttributes_ = std::move(initAttributes);
+  setMarkerSets(initAttributes->getMarkerSetsConfiguration());
+  objInitAttributes_ = std::move(initAttributes);
 
   return initialization_LibSpecific();
 }  // RigidObject::initialize
@@ -34,7 +37,7 @@ bool RigidObject::finalizeObject() {
   // cast initialization attributes
   metadata::attributes::ObjectAttributes::cptr ObjectAttributes =
       std::dynamic_pointer_cast<const metadata::attributes::ObjectAttributes>(
-          initializationAttributes_);
+          objInitAttributes_);
 
   if (!ObjectAttributes->getComputeCOMFromShape()) {
     // will be false if the COM is provided; shift by that COM
@@ -88,7 +91,7 @@ void RigidObject::resetStateFromSceneInstanceAttr() {
 
   // set object's motion type if different than set value
   const physics::MotionType attrObjMotionType =
-      static_cast<physics::MotionType>(sceneInstanceAttr->getMotionType());
+      sceneInstanceAttr->getMotionType();
   if (attrObjMotionType != physics::MotionType::UNDEFINED) {
     this->setMotionType(attrObjMotionType);
   }

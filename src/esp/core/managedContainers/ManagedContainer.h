@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -6,8 +6,9 @@
 #define ESP_CORE_MANAGEDCONTAINER_H_
 
 /** @file
- * @brief Class Template @ref esp::core::ManagedContainer : container
- * functionality to manage @ref esp::core::AbstractManagedObject objects
+ * @brief Class Template @ref esp::core::managedContainers::ManagedContainer :
+ * container functionality to manage @ref
+ * esp::core::managedContainers::AbstractManagedObject objects
  */
 
 #include "ManagedContainerBase.h"
@@ -15,6 +16,33 @@
 namespace esp {
 namespace core {
 namespace managedContainers {
+
+/**
+ * @brief This enum describes the return status from preregistration
+ * conditioning of attributes. Preregistration is performed by
+ * @ref preRegisterObjectFinalize , which will conduct any type-specific
+ * initialization and/or validation that might be required before an object
+ * is registered (i.e. saved in the @ref ManagedContainer). The return status
+ * of this preregistration specifies how the registration proceess should
+ * proceed.
+ */
+enum class ManagedObjectPreregistration {
+  /**
+   * The preregistration processing failed for some reason, and the managed
+   * object will not be registered.
+   */
+  Failed,
+  /**
+   * The preregistration succeeded, the object can be registered with the given
+   * handle.
+   */
+  Success,
+  /**
+   * The preregistration succeeded, but the object has a self-derived
+   * registration handle that must be used. (i.e. PrimitiveAttributes)
+   */
+  Success_Use_Object_Handle
+};
 
 /**
  * @brief This enum describes how objects held in the @ref ManagedConatainer are
@@ -37,10 +65,10 @@ enum class ManagedObjectAccess {
 
 /**
  * @brief Class template defining responsibilities and functionality for
- * managing @ref esp::core::AbstractManagedObject constructs.
+ * managing @ref esp::core::managedContainers::AbstractManagedObject constructs.
  * @tparam T the type of managed object a particular specialization of
  * this class works with.  Must inherit from @ref
- * esp::core::AbstractManagedObject.
+ * esp::core::managedContainers::AbstractManagedObject.
  * @tparam Access Whether the default access (getters) for this
  * container provides copies of the objects held, or the actual objects
  * themselves.
@@ -54,7 +82,7 @@ class ManagedContainer : public ManagedContainerBase {
 
   /**
    * @brief Alias for shared pointer to the @ref
-   * esp::core::AbstractManagedObject this container manages.
+   * esp::core::managedContainers::AbstractManagedObject this container manages.
    */
   typedef std::shared_ptr<T> ManagedPtr;
 
@@ -107,11 +135,12 @@ class ManagedContainer : public ManagedContainerBase {
     if (nullptr == object) {
       return nullptr;
     }
-    return this->postCreateRegister(object, registerObject);
+    return this->postCreateRegister(std::move(object), registerObject);
   }  // ManagedContainer::createDefault
 
   /**
-   * @brief Add a copy of @ref esp::core::AbstractManagedObject to the @ref
+   * @brief Add a copy of @ref
+   * esp::core::managedContainers::AbstractManagedObject to the @ref
    * objectLibrary_.
    *
    * @param managedObject The managed object.
@@ -119,7 +148,7 @@ class ManagedContainer : public ManagedContainerBase {
    * the @ref ManagedContainerBase::objectLibrary_. Will be set as origin handle
    * for managed object. If empty string, use existing origin handle.
    * @param forceRegistration Will register object even if conditional
-   * registration checks fail in registerObjectFinalize.
+   * registration checks fail in registerObjectInternal.
    *
    * @return The unique ID of the managed object being registered, or
    * ID_UNDEFINED if failed
@@ -131,23 +160,23 @@ class ManagedContainer : public ManagedContainerBase {
       ESP_ERROR(Magnum::Debug::Flag::NoSpace)
           << "<" << this->objectType_
           << "> : Invalid (null) managed object passed to "
-             "registration. Aborting.";
+             "registration, so registration aborted.";
       return ID_UNDEFINED;
     }
-    if ("" != objectHandle) {
-      return registerObjectFinalize(managedObject, objectHandle,
-                                    forceRegistration);
-    }
-    std::string handleToSet = managedObject->getHandle();
+    // If no handle give, query object for handle
+    std::string handleToSet =
+        ("" == objectHandle) ? managedObject->getHandle() : objectHandle;
+    // if still no handle, fail registration
     if ("" == handleToSet) {
       ESP_ERROR(Magnum::Debug::Flag::NoSpace)
           << "<" << this->objectType_
-          << "> : No valid handle specified to register this "
-          << this->objectType_ << " managed object. Aborting.";
+          << "> : No valid handle specified to register this managed object, "
+             "so registration aborted.";
       return ID_UNDEFINED;
     }
-    return registerObjectFinalize(managedObject, handleToSet,
-                                  forceRegistration);
+    // Perform actual registration
+    return this->registerObjectInternal(std::move(managedObject), handleToSet,
+                                        forceRegistration);
   }  // ManagedContainer::registerObject
 
   /**
@@ -164,8 +193,7 @@ class ManagedContainer : public ManagedContainerBase {
    */
   ManagedPtr getObjectByID(int managedObjectID) const {
     std::string objectHandle = getObjectHandleByID(managedObjectID);
-    if (!checkExistsWithMessage(objectHandle,
-                                "<" + this->objectType_ + ">::getObjectByID")) {
+    if (!checkExistsWithMessage(objectHandle, "getObjectByID")) {
       return nullptr;
     }
     return getObjectInternal<T>(objectHandle);
@@ -183,17 +211,44 @@ class ManagedContainer : public ManagedContainerBase {
    * exist
    */
   ManagedPtr getObjectByHandle(const std::string& objectHandle) const {
-    if (!checkExistsWithMessage(
-            objectHandle, "<" + this->objectType_ + ">::getObjectByHandle")) {
+    if (!checkExistsWithMessage(objectHandle, "getObjectByHandle")) {
       return nullptr;
     }
     return getObjectInternal<T>(objectHandle);
-  }  // ManagedContainer::getObject
+  }  // ManagedContainer::getObjectByHandle
+
+  /**
+   * @brief Get a reference to the first matching managed object that contains
+   * the passed string as a substring for it's handle. Should only be used
+   * internally - Users should only ever access copies of managed objects,
+   * unless this managed container's @p Access policy is Share.
+   *
+   * @param objectHandle The substring of the handle referencing the managed object in @ref
+   * objectLibrary_ to search for.
+   * @return A reference to the first managed object, or nullptr if does not
+   * exist
+   */
+  ManagedPtr getFirstMatchingObjectByHandle(
+      const std::string& objectHandle) const {
+    if (getObjectLibHasHandle(objectHandle)) {
+      // Has the passed string as a handle.
+      return getObjectInternal<T>(objectHandle);
+    }
+    // search for elements containing objectHandle
+    std::vector<std::string> handles =
+        getObjectHandlesBySubstring(objectHandle);
+    if (handles.size() == 0) {
+      // Nothing matched
+      return nullptr;
+    }
+    // A handle matched, get the object directly (bipassing any more checks)
+    return getObjectInternal<T>(handles[0]);
+  }  // ManagedContainer::getFirstMatchingObjectByHandle
 
   /**
    * @brief Retrieve a map of key= std::string handle; value = copy of
    * ManagedPtr object where the handles match the passed @p .  See @ref
-   * ManagedContainerBase::getObjectHandlesBySubStringPerType.
+   * ManagedContainerBase::getAllObjectHandlesBySubStringPerType.
    * @param subStr substring key to search for within existing managed objects.
    * @param contains whether to search for keys containing, or excluding,
    * passed @p subStr
@@ -203,8 +258,8 @@ class ManagedContainer : public ManagedContainerBase {
   std::unordered_map<std::string, ManagedPtr> getObjectsByHandleSubstring(
       const std::string& subStr = "",
       bool contains = true) {
-    std::vector<std::string> keys = this->getObjectHandlesBySubStringPerType(
-        objectLibKeyByID_, subStr, contains, false);
+    std::vector<std::string> keys =
+        this->getAllObjectHandlesBySubStringPerType(subStr, contains, false);
 
     std::unordered_map<std::string, ManagedPtr> res;
     res.reserve(keys.size());
@@ -223,7 +278,7 @@ class ManagedContainer : public ManagedContainerBase {
   /**
    * @brief Templated version. Retrieve a map of key= std::string handle; value
    * = copy of ManagedPtr object where the handles match the passed @p .  See
-   * @ref ManagedContainerBase::getObjectHandlesBySubStringPerType.
+   * @ref ManagedContainerBase::getAllObjectHandlesBySubStringPerType.
    *
    * @tparam Desired downcast class that inerheits from this ManagedContainer's
    * ManagedObject type.
@@ -237,8 +292,11 @@ class ManagedContainer : public ManagedContainerBase {
   std::unordered_map<std::string, std::shared_ptr<U>>
   getObjectsByHandleSubstring(const std::string& subStr = "",
                               bool contains = true) {
-    std::vector<std::string> keys = this->getObjectHandlesBySubStringPerType(
-        objectLibKeyByID_, subStr, contains, false);
+    static_assert(std::is_base_of<T, U>::value,
+                  "ManagedContainer :: Desired type must be derived from "
+                  "Managed object type");
+    std::vector<std::string> keys =
+        this->getAllObjectHandlesBySubStringPerType(subStr, contains, false);
 
     std::unordered_map<std::string, std::shared_ptr<U>> res;
     res.reserve(keys.size());
@@ -264,13 +322,10 @@ class ManagedContainer : public ManagedContainerBase {
    */
   ManagedPtr removeObjectByID(int objectID) {
     std::string objectHandle = getObjectHandleByID(objectID);
-    if (!checkExistsWithMessage(
-            objectHandle, "<" + this->objectType_ + ">::removeObjectByID")) {
+    if (!checkExistsWithMessage(objectHandle, "removeObjectByID")) {
       return nullptr;
     }
-    return removeObjectInternal(
-        objectID, objectHandle,
-        "<" + this->objectType_ + ">::removeObjectByID");
+    return removeObjectInternal(objectID, objectHandle, "removeObjectByID");
   }
 
   /**
@@ -282,17 +337,14 @@ class ManagedContainer : public ManagedContainerBase {
    * exist
    */
   ManagedPtr removeObjectByHandle(const std::string& objectHandle) {
-    if (!checkExistsWithMessage(objectHandle, "<" + this->objectType_ +
-                                                  ">::removeObjectByHandle")) {
+    if (!checkExistsWithMessage(objectHandle, "removeObjectByHandle")) {
       return nullptr;
     }
     int objectID = this->getObjectIDByHandle(objectHandle);
     if (objectID == ID_UNDEFINED) {
       return nullptr;
     }
-    return removeObjectInternal(
-        objectID, objectHandle,
-        "<" + this->objectType_ + ">::removeObjectByHandle");
+    return removeObjectInternal(objectID, objectHandle, "removeObjectByHandle");
   }
 
   /**
@@ -355,6 +407,26 @@ class ManagedContainer : public ManagedContainerBase {
   }  // ManagedContainer::getObjectOrCopyByHandle
 
   /**
+   * @brief Get a reference to, or a copy of, the first managed object found
+   * containing the passed the @p handleSubstr, as part of its handle. depending
+   * on @p Access value.  This is the function that should be be accessed by the
+   * user for handle substring consumption.
+   *
+   * @param handleSubstr the substring key to use to find the first matching
+   * copy.
+   * @return A mutable reference to the managed object, or a copy, or nullptr if
+   * does not exist
+   */
+  ManagedPtr getFirstMatchingObjectOrCopyByHandle(
+      const std::string& handleSubstr) {
+    if (Access == ManagedObjectAccess::Copy) {
+      return this->getFirstMatchingObjectCopyByHandle(handleSubstr);
+    } else {
+      return this->getFirstMatchingObjectByHandle(handleSubstr);
+    }
+  }  // ManagedContainer::getFirstMatchingObjectOrCopyByHandle
+
+  /**
    * @brief Get a reference to, or a copy of, the managed object identified by
    * the @p managedObjectID, depending on @p Access value, and casted to the
    * appropriate derived managed object class. This is the version that should
@@ -384,6 +456,9 @@ class ManagedContainer : public ManagedContainerBase {
    */
   template <class U>
   std::shared_ptr<U> getObjectOrCopyByHandle(const std::string& objectHandle) {
+    static_assert(std::is_base_of<T, U>::value,
+                  "ManagedContainer :: Desired type must be derived from "
+                  "Managed object type");
     // call non-template version
     auto res = getObjectOrCopyByHandle(objectHandle);
     if (nullptr == res) {
@@ -403,8 +478,7 @@ class ManagedContainer : public ManagedContainerBase {
    */
   ManagedPtr getObjectCopyByID(int managedObjectID) {
     std::string objectHandle = getObjectHandleByID(managedObjectID);
-    if (!checkExistsWithMessage(
-            objectHandle, "<" + this->objectType_ + ">::getObjectCopyByID")) {
+    if (!checkExistsWithMessage(objectHandle, "getObjectCopyByID")) {
       return nullptr;
     }
     auto orig = getObjectInternal<T>(objectHandle);
@@ -419,13 +493,38 @@ class ManagedContainer : public ManagedContainerBase {
    * does not exist
    */
   ManagedPtr getObjectCopyByHandle(const std::string& objectHandle) {
-    if (!checkExistsWithMessage(objectHandle, "<" + this->objectType_ +
-                                                  ">::getObjectCopyByHandle")) {
+    if (!checkExistsWithMessage(objectHandle, "getObjectCopyByHandle")) {
       return nullptr;
     }
     auto orig = getObjectInternal<T>(objectHandle);
     return this->copyObject(orig);
   }  // ManagedContainer::getObjectCopyByHandle
+
+  /**
+   * @brief Get a reference to a copy of the first object found containing the
+   * specified by @p handleSubstr
+   * @param handleSubstr the string key of the managed object desired.
+   * @return A mutable reference to a copy of the managed object, or nullptr if
+   * does not exist
+   */
+  ManagedPtr getFirstMatchingObjectCopyByHandle(
+      const std::string& handleSubstr) {
+    if (getObjectLibHasHandle(handleSubstr)) {
+      // Has the passed string as a handle.
+      auto orig = getObjectInternal<T>(handleSubstr);
+      return this->copyObject(orig);
+    }
+    // search for elements containing objectHandle
+    std::vector<std::string> handles =
+        getObjectHandlesBySubstring(handleSubstr);
+    if (handles.size() == 0) {
+      // Nothing matched
+      return nullptr;
+    }
+    // A handle matched, get the object directly (bipassing any more checks)
+    auto orig = getObjectInternal<T>(handles[0]);
+    return this->copyObject(orig);
+  }  // ManagedContainer::getFirstMatchingObjectCopyByHandle
 
   /**
    * @brief Get a reference to a copy of the managed object identified
@@ -441,6 +540,9 @@ class ManagedContainer : public ManagedContainerBase {
    */
   template <class U>
   std::shared_ptr<U> getObjectCopyByID(int managedObjectID) {
+    static_assert(std::is_base_of<T, U>::value,
+                  "ManagedContainer :: Desired type must be derived from "
+                  "Managed object type");
     // call non-template version
     auto res = getObjectCopyByID(managedObjectID);
     if (nullptr == res) {
@@ -460,6 +562,9 @@ class ManagedContainer : public ManagedContainerBase {
    */
   template <class U>
   std::shared_ptr<U> getObjectCopyByHandle(const std::string& objectHandle) {
+    static_assert(std::is_base_of<T, U>::value,
+                  "ManagedContainer :: Desired type must be derived from "
+                  "Managed object type");
     // call non-template version
     auto res = getObjectCopyByHandle(objectHandle);
     if (nullptr == res) {
@@ -470,8 +575,8 @@ class ManagedContainer : public ManagedContainerBase {
 
   /**
    * @brief Set the object to provide default values upon construction of @ref
-   * esp::core::AbstractManagedObject.  Override if object should not have
-   * defaults
+   * esp::core::managedContainers::AbstractManagedObject.  Override if object
+   * should not have defaults
    * @param _defaultObj the object to use for defaults;
    */
   virtual void setDefaultObject(ManagedPtr& _defaultObj) {
@@ -532,36 +637,26 @@ class ManagedContainer : public ManagedContainerBase {
                                   const std::string& src);
 
   /**
-   * @brief implementation of managed object type-specific registration
-   * @param object the managed object to be registered
-   * @param objectHandle the name to register the managed object with.
-   * Expected to be valid.
-   * @param forceRegistration Will register object even if conditional
-   * registration checks fail.
-   * @return The unique ID of the managed object being registered, or
-   * ID_UNDEFINED if failed
-   */
-  virtual int registerObjectFinalize(ManagedPtr object,
-                                     const std::string& objectHandle,
-                                     bool forceRegistration) = 0;
-
-  /**
-   * @brief Build a shared pointer to a copy of a the passed managed object,
-   * of appropriate managed object type for passed object type.  This is the
-   * function called by the copy constructor map.
+   * @brief This is the function called by the copy constructor map. Build a
+   * shared pointer to a copy of a the passed managed object, of appropriate
+   * managed object type for passed object type.
+   *
    * @tparam U Type of managed object being created - must be a derived class
    * of ManagedPtr
    * @param orig original object of type ManagedPtr being copied
    */
-  template <typename U>
-  ManagedPtr createObjectCopy(ManagedPtr& orig) {
+  template <class U>
+  ManagedPtr createObjCopyCtorMapEntry(ManagedPtr& orig) {
+    static_assert(std::is_base_of<T, U>::value,
+                  "ManagedContainer :: Desired type must be derived from "
+                  "Managed object type");
     // don't call init on copy - assume copy is already properly initialized.
     return U::create(*(static_cast<U*>(orig.get())));
-  }  // ManagedContainer::
+  }  // ManagedContainer::createObjCopyCtorMapEntry
 
   /**
-   * @brief Build an @ref esp::core::AbstractManagedObject object of type
-   * associated with passed object.
+   * @brief Build an @ref esp::core::managedContainers::AbstractManagedObject
+   * object of type associated with passed object.
    * @param origAttr The ptr to the original AbstractManagedObject object to
    * copy
    */
@@ -588,6 +683,75 @@ class ManagedContainer : public ManagedContainerBase {
   }  // ManagedContainer::constructFromDefault
 
   /**
+   * @brief This method will perform any final conditioning or updated required
+   * by the @ref ManagedPtr object before it is registered.
+   *
+   * @param object the managed object to be registered
+   * @param objectHandle the name to register the managed object with.
+   * Expected to be valid.
+   * @param forceRegistration Will register object even if conditional
+   * registration checks fail.
+   * @return Whether there was an error in preconditioning the object that
+   * prevents successful registration.
+   */
+  virtual ManagedObjectPreregistration preRegisterObjectFinalize(
+      ManagedPtr object,
+      const std::string& objectHandle,
+      bool forceRegistration) = 0;
+
+  /**
+   * @brief This method will perform any final manager-related handling after
+   * successfully registering an object.
+   *
+   * See @ref esp::attributes::managers::ObjectAttributesManager foran example.
+   *
+   * @param objectID the ID of the successfully registered managed object
+   * @param objectHandle The name of the managed object
+   */
+  virtual void postRegisterObjectHandling(int objectID,
+                                          const std::string& objectHandle) = 0;
+
+ private:
+  /**
+   * @brief implementation of managed object registration. Will call the
+   * appropriate type-specific preregistration conditioning before registering
+   * the object and post-registration handling after successful registration.
+   * @ref ManagedPtr object.
+   *
+   * @param object the managed object to be registered
+   * @param objectHandle the name to register the managed object with.
+   * Expected to be valid.
+   * @param forceRegistration Will register object even if conditional
+   * registration checks fail.
+   * @return The unique ID of the managed object being registered, or
+   * ID_UNDEFINED if failed
+   */
+  int registerObjectInternal(ManagedPtr object,
+                             const std::string& objectHandle,
+                             bool forceRegistration) {
+    // Handle preregistration type-specific processing of managed object
+    ManagedObjectPreregistration status =
+        preRegisterObjectFinalize(object, objectHandle, forceRegistration);
+    // Don't register if failed.
+    if (status == ManagedObjectPreregistration::Failed) {
+      return ID_UNDEFINED;
+    }
+    const std::string& handleToUse =
+        (status == ManagedObjectPreregistration::Success_Use_Object_Handle
+             ? object->getHandle()
+             : objectHandle);
+    // adds template to library, and returns the ID of the existing template
+    // referenced by handleToUse
+    int objectID = this->addObjectToLibrary(std::move(object), handleToUse);
+    // If registration succeeded then perform post-registration handling
+    if (objectID != ID_UNDEFINED) {
+      // post registration manager-specific processing.
+      postRegisterObjectHandling(objectID, handleToUse);
+    }
+    return objectID;
+  }  // registerObjectInternal
+
+  /**
    * @brief add passed managed object to library, setting managedObjectID
    * appropriately. Called internally by registerObject.
    *
@@ -612,13 +776,12 @@ class ManagedContainer : public ManagedContainerBase {
     // original
     ManagedPtr managedObjectCopy = copyObject(object);
     // add to libraries
-    setObjectInternal(managedObjectCopy, objectHandle);
-    objectLibKeyByID_.emplace(objectID, objectHandle);
+    setObjectInternal(managedObjectCopy, objectID, objectHandle);
     return objectID;
   }  // ManagedContainer::addObjectToLibrary
 
   // ======== Typedefs and Instance Variables ========
-
+ protected:
   /**
    * @brief Define a map type referencing function pointers to @ref
    * createObjectCopy keyed by string names of classes being instanced,
@@ -659,8 +822,8 @@ auto ManagedContainer<T, Access>::removeObjectsBySubstring(
       getObjectHandlesBySubstring(subStr, contains);
   for (const std::string& objectHandle : handles) {
     int objID = this->getObjectIDByHandle(objectHandle);
-    ManagedPtr ptr = removeObjectInternal(objID, objectHandle,
-                                          "<" + this->objectType_ + ">");
+    ManagedPtr ptr =
+        removeObjectInternal(objID, objectHandle, "removeObjectsBySubstring");
     if (nullptr != ptr) {
       res.push_back(ptr);
     }
@@ -674,19 +837,23 @@ auto ManagedContainer<T, Access>::removeObjectInternal(
     const std::string& objectHandle,
     const std::string& sourceStr) -> ManagedPtr {
   if (!checkExistsWithMessage(objectHandle, sourceStr)) {
-    ESP_DEBUG() << sourceStr << ": Unable to remove" << objectType_
-                << "managed object" << objectHandle << ": Does not exist.";
+    ESP_DEBUG(Magnum::Debug::Flag::NoSpace)
+        << "<" + this->objectType_ + ">::" << sourceStr
+        << " : Unable to remove requested managed object `" << objectHandle
+        << "` : Does not exist.";
     return nullptr;
   }
   std::string msg;
   if (this->getIsUndeletable(objectHandle)) {
     msg = "Required Undeletable Managed Object";
   } else if (this->getIsUserLocked(objectHandle)) {
-    msg = "User-locked Object.  To delete managed object, unlock it";
+    msg = "User-locked Object. To delete managed object, unlock it";
   }
   if (msg.length() != 0) {
-    ESP_DEBUG() << sourceStr << ": Unable to remove" << objectType_
-                << "managed object" << objectHandle << ":" << msg << ".";
+    ESP_DEBUG(Magnum::Debug::Flag::NoSpace)
+        << "<" + this->objectType_ + ">::" << sourceStr
+        << " : Unable to remove requested managed object `" << objectHandle
+        << "` : Object is a " << msg << ".";
     return nullptr;
   }
   ManagedPtr managedObject = getObjectInternal<T>(objectHandle);

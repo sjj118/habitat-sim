@@ -1,13 +1,11 @@
-[![CircleCI](https://circleci.com/gh/facebookresearch/habitat-sim.svg?style=shield)](https://circleci.com/gh/facebookresearch/habitat-sim)
 [![codecov](https://codecov.io/gh/facebookresearch/habitat-sim/branch/main/graph/badge.svg)](https://codecov.io/gh/facebookresearch/habitat-sim)
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/facebookresearch/habitat-sim/blob/main/LICENSE)
 [![Conda Version Badge](https://img.shields.io/conda/vn/aihabitat/habitat-sim?color=blue&label=conda%20version)](https://anaconda.org/aihabitat/habitat-sim)
 [![Conda Platforms support Badge](https://img.shields.io/conda/pn/aihabitat/habitat-sim?color=orange&label=platforms)](https://anaconda.org/aihabitat/habitat-sim)
 [![Documentation](https://img.shields.io/badge/docs-automated-green.svg)](https://aihabitat.org/docs/habitat-sim/)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
-[![Python 3.7, 3.8](https://img.shields.io/badge/python-3.6%20%7C%203.7%20%7C%203.8-blue.svg)](https://www.python.org/downloads/release/)
+[![Python 3.9](https://img.shields.io/badge/python-3.9.svg)](https://www.python.org/downloads/release/)
 [![Supports Bullet](https://img.shields.io/static/v1?label=supports&message=Bullet%20Physics&color=informational&link=https://opensource.google/projects/bullet3)](https://opensource.google/projects/bullet3)
-[![Slack Join](http://img.shields.io/static/v1?label=Join%20us%20on&message=%23habitat-dev&labelColor=%234A154B&logo=slack)](https://join.slack.com/t/ai-habitat/shared_invite/enQtNjY1MzM1NDE4MTk2LTZhMzdmYWMwODZlNjg5MjZiZjExOTBjOTg5MmRiZTVhOWQyNzk0OTMyN2E1ZTEzZTNjMWM0MjBkN2VhMjQxMDI)
 [![Twitter Follow](https://img.shields.io/twitter/follow/ai_habitat?style=social)](https://twitter.com/ai_habitat)
 
 # Habitat-Sim
@@ -16,7 +14,7 @@ A high-performance physics-enabled 3D simulator with support for:
 - 3D scans of indoor/outdoor spaces (with built-in support for [HM3D](https://aihabitat.org/datasets/hm3d/), [MatterPort3D](https://niessner.github.io/Matterport/), [Gibson](http://gibsonenv.stanford.edu/database/), [Replica](https://github.com/facebookresearch/Replica-Dataset), and other datasets)
 - CAD models of spaces and piecewise-rigid objects (e.g. [ReplicaCAD](https://aihabitat.org/datasets/replica_cad/), [YCB](https://www.ycbbenchmarks.com/), [Google Scanned Objects](https://app.ignitionrobotics.org/GoogleResearch/fuel/collections/Google%20Scanned%20Objects)),
 - Configurable sensors (RGB-D cameras, egomotion sensing)
-- Robots described via URDF (mobile manipulators like [Fetch](http://docs.fetchrobotics.com/), fixed-base arms like [Franka](https://www.franka.de/),quadrupeds like [AlienGo](https://www.unitree.com/products/aliengo/)),
+- Robots described via URDF (mobile manipulators like [Fetch](http://docs.fetchrobotics.com/), fixed-base arms like [Franka](https://www.franka.de/), quadrupeds like [AlienGo](https://www.unitree.com/products/aliengo/)),
 - Rigid-body mechanics (via [Bullet](https://github.com/bulletphysics/bullet3)).
 
 The design philosophy of Habitat is to prioritize simulation speed over the breadth of simulation capabilities. When rendering a scene from the Matterport3D dataset, Habitat-Sim achieves several thousand frames per second (FPS) running single-threaded and reaches over 10,000 FPS multi-process on a single GPU. Habitat-Sim simulates a Fetch robot interacting in ReplicaCAD scenes at over 8,000 steps per second (SPS), where each ‘step’ involves rendering 1 RGBD observation (128×128 pixels) and rigid-body dynamics for 1/30sec.
@@ -25,7 +23,7 @@ The design philosophy of Habitat is to prioritize simulation speed over the brea
 Habitat-Sim is typically used with
 [Habitat-Lab](https://github.com/facebookresearch/habitat-lab), a modular high-level library for end-to-end experiments in embodied AI -- defining embodied AI tasks (e.g. navigation, instruction following, question answering), training agents (via imitation or reinforcement learning, or no learning at all as in classical SensePlanAct pipelines), and benchmarking their performance on the defined tasks using standard metrics.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/facebookresearch/habitat-sim/)
+## [Questions or Comments? Join the AI Habitat community discussions forum.](https://github.com/facebookresearch/habitat-lab/discussions)
 
 [![Habitat Demo](https://img.shields.io/static/v1?label=WebGL&message=Try%20AI%20Habitat%20In%20Your%20Browser%20&color=blue&logo=webgl&labelColor=%23990000&style=for-the-badge&link=https://aihabitat.org/demo)](https://aihabitat.org/demo)
 
@@ -44,9 +42,16 @@ https://user-images.githubusercontent.com/2941091/126080914-36dc8045-01d4-4a68-8
 
 
 ## Citing Habitat
-If you use the Habitat platform in your research, please cite the [Habitat 1.0](https://arxiv.org/abs/1904.01201) and [Habitat 2.0](https://arxiv.org/abs/2106.14405) papers:
+If you use the Habitat platform in your research, please cite the [Habitat 1.0](https://arxiv.org/abs/1904.01201), [Habitat 2.0](https://arxiv.org/abs/2106.14405), and [Habitat 3.0](https://arxiv.org/abs/2310.13724) papers:
 
 ```
+@misc{puig2023habitat3,
+      title  = {Habitat 3.0: A Co-Habitat for Humans, Avatars and Robots},
+      author = {Xavi Puig and Eric Undersander and Andrew Szot and Mikael Dallaire Cote and Ruslan Partsey and Jimmy Yang and Ruta Desai and Alexander William Clegg and Michal Hlavac and Tiffany Min and Theo Gervet and Vladimír Vondruš and Vincent-Pierre Berges and John Turner and Oleksandr Maksymets and Zsolt Kira and Mrinal Kalakrishnan and Jitendra Malik and Devendra Singh Chaplot and Unnat Jain and Dhruv Batra and Akshara Rai and Roozbeh Mottaghi},
+      year={2023},
+      archivePrefix={arXiv},
+}
+
 @inproceedings{szot2021habitat,
   title     =     {Habitat 2.0: Training Home Assistants to Rearrange their Habitat},
   author    =     {Andrew Szot and Alex Clegg and Eric Undersander and Erik Wijmans and Yili Zhao and John Turner and Noah Maestre and Mustafa Mukadam and Devendra Chaplot and Oleksandr Maksymets and Aaron Gokaslan and Vladimir Vondrus and Sameer Dharur and Franziska Meier and Wojciech Galuba and Angel Chang and Zsolt Kira and Vladlen Koltun and Jitendra Malik and Manolis Savva and Dhruv Batra},
@@ -82,8 +87,8 @@ Habitat is under active development, and we advise users to restrict themselves 
 
    Assuming you have [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/) installed, let's prepare a conda env:
    ```bash
-   # We require python>=3.7 and cmake>=3.10
-   conda create -n habitat python=3.7 cmake=3.14.0
+   # We require python>=3.9 and cmake>=3.10
+   conda create -n habitat python=3.9 cmake=3.14.0
    conda activate habitat
    ```
 
@@ -232,14 +237,13 @@ We also provide a [nightly conda build for the main branch](https://anaconda.org
 
 Browse the online [Habitat-Sim documentation](https://aihabitat.org/docs/habitat-sim/index.html).
 
-To get you started, see the [Lighting Setup tutorial](https://aihabitat.org/docs/habitat-sim/lighting-setups.html) for adding new objects to existing scenes and relighting the scene & objects. The [Image Extractor tutorial](https://aihabitat.org/docs/habitat-sim/image-extractor.html) shows how to get images from scenes loaded in Habitat-Sim.
+Check out our [ECCV tutorial series](https://aihabitat.org/tutorial/2020/) for a hands-on quickstart experience.
 
-### Questions?
-[![Slack Join](http://img.shields.io/static/v1?label=Join%20us%20on&message=%23habitat-dev&labelColor=%234A154B&logo=slack)](https://join.slack.com/t/ai-habitat/shared_invite/enQtNjY1MzM1NDE4MTk2LTZhMzdmYWMwODZlNjg5MjZiZjExOTBjOTg5MmRiZTVhOWQyNzk0OTMyN2E1ZTEzZTNjMWM0MjBkN2VhMjQxMDI)
+Can't find the answer to your question? Try asking the developers and community on our [Discussions forum](https://github.com/facebookresearch/habitat-lab/discussions).
 
 ## Datasets
 
-[Common datasets used with Habitat](DATASETS.md).
+[HowTo use common supported datasets with Habitat-Sim](DATASETS.md).
 
 
 ## External Contributions
@@ -259,6 +263,6 @@ To get you started, see the [Lighting Setup tutorial](https://aihabitat.org/docs
 
 Habitat-Sim is MIT licensed. See the [LICENSE](LICENSE) for details.
 
-The WebGL demo and demo scripts use:
+The demo scripts use:
 - [The King´s Hall](https://sketchfab.com/3d-models/the-king-s-hall-d18155613363445b9b68c0c67196d98d) by [Skokloster Castle (Skoklosters slott)](https://sketchfab.com/SkoklosterCastle) licensed under [Creative Commons Attribution](http://creativecommons.org/licenses/by/4.0/)
 - [Van Gogh Room](https://sketchfab.com/3d-models/van-gogh-room-311d052a9f034ba8bce55a1a8296b6f9) by [ruslans3d](https://sketchfab.com/ruslans3d) licensed under [Creative Commons Attribution](http://creativecommons.org/licenses/by/4.0/)

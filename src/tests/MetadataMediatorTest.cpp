@@ -1,12 +1,12 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
 #include <Corrade/TestSuite/Compare/Numeric.h>
 #include <Corrade/TestSuite/Tester.h>
 #include "esp/metadata/MetadataMediator.h"
+#include "esp/metadata/managers/AbstractAttributesManager.h"
 #include "esp/metadata/managers/AssetAttributesManager.h"
-#include "esp/metadata/managers/AttributesManagerBase.h"
 #include "esp/metadata/managers/ObjectAttributesManager.h"
 #include "esp/metadata/managers/PhysicsAttributesManager.h"
 #include "esp/metadata/managers/StageAttributesManager.h"
@@ -113,7 +113,7 @@ void MetadataMediatorTest::testDataset0() {
     // verify that all attributes' names are the same as the render handles
     // (which were the original files)
     CORRADE_COMPARE(glbStageAttr->getHandle(),
-                    glbStageAttr->getRenderAssetHandle());
+                    glbStageAttr->getRenderAssetFullPath());
   }
 
   // get list of matching handles for base - should always only be 1
@@ -124,7 +124,7 @@ void MetadataMediatorTest::testDataset0() {
   auto stageAttr =
       stageAttributesMgr->getObjectCopyByHandle(stageAttrHandles[0]);
   // get render asset handle for later comparison
-  auto renderAssetHandle = stageAttr->getRenderAssetHandle();
+  auto renderAssetHandle = stageAttr->getRenderAssetFullPath();
   // verify existence
   CORRADE_VERIFY(stageAttr);
   // verify set to values in file
@@ -161,7 +161,7 @@ void MetadataMediatorTest::testDataset0() {
   // verify existence
   CORRADE_VERIFY(stageAttr);
   // verify set to values in dataset_config file
-  auto newRenderAssetHandle = stageAttr->getRenderAssetHandle();
+  auto newRenderAssetHandle = stageAttr->getRenderAssetFullPath();
   // verify same renderasset handle to loaded stage attributes
   CORRADE_COMPARE(renderAssetHandle, newRenderAssetHandle);
   // verify values set correctly
@@ -204,6 +204,8 @@ void MetadataMediatorTest::testDataset0() {
   CORRADE_COMPARE(objAttr->getMargin(), 0.03);
   CORRADE_COMPARE(objAttr->getMass(), 0.038);
   CORRADE_COMPARE(objAttr->getFrictionCoefficient(), 0.5);
+  CORRADE_COMPARE(objAttr->getRollingFrictionCoefficient(), 0.6);
+  CORRADE_COMPARE(objAttr->getSpinningFrictionCoefficient(), 0.7);
   CORRADE_COMPARE(objAttr->getRestitutionCoefficient(), 0.2);
   CORRADE_COMPARE(objAttr->getOrientUp(), Magnum::Vector3(0, 1, 0));
   CORRADE_COMPARE(objAttr->getOrientFront(), Magnum::Vector3(0, 0, -1));
@@ -226,6 +228,8 @@ void MetadataMediatorTest::testDataset0() {
   CORRADE_COMPARE(objAttr->getMargin(), 0.03);
   CORRADE_COMPARE(objAttr->getMass(), 3.5);
   CORRADE_COMPARE(objAttr->getFrictionCoefficient(), 0.2);
+  CORRADE_COMPARE(objAttr->getRollingFrictionCoefficient(), 0.0002);
+  CORRADE_COMPARE(objAttr->getSpinningFrictionCoefficient(), 0.0003);
   CORRADE_COMPARE(objAttr->getRestitutionCoefficient(), 0.2);
   CORRADE_COMPARE(objAttr->getOrientUp(), Magnum::Vector3(0, 1, 0));
   CORRADE_COMPARE(objAttr->getOrientFront(), Magnum::Vector3(0, 0, -1));
@@ -242,7 +246,7 @@ void MetadataMediatorTest::testDataset0() {
   // verify existence
   CORRADE_VERIFY(objAttr);
   // verify set to values in dataset_config file
-  newRenderAssetHandle = objAttr->getRenderAssetHandle();
+  newRenderAssetHandle = objAttr->getRenderAssetFullPath();
   // verify same renderasset handle to loaded stage attributes
   CORRADE_VERIFY(newRenderAssetHandle.find("dataset_test_object3.glb") !=
                  std::string::npos);
@@ -333,11 +337,11 @@ void MetadataMediatorTest::testDataset0() {
   const std::string activeSceneName = sceneAttrHandles[0];
   ESP_WARNING() << "testLoadSceneInstances : Scene instance attr handle :"
                 << activeSceneName;
-  // get scene instance attributes ref
+  // get Scene Instance Attributes ref
   // metadata::attributes::SceneInstanceAttributes::cptr
   // curSceneInstanceAttributes =
   auto sceneAttrs = MM_->getSceneInstanceAttributesByName(activeSceneName);
-  // this should be a scene instance attributes with specific stage and object
+  // this should be a Scene Instance Attributes with specific stage and object
   CORRADE_VERIFY(sceneAttrs);
   // verify default value for translation origin
   CORRADE_COMPARE(static_cast<int>(sceneAttrs->getTranslationOrigin()),
@@ -356,7 +360,8 @@ void MetadataMediatorTest::testDataset0() {
   CORRADE_VERIFY(navmeshHandle.find("navmesh_path1") != std::string::npos);
   // ssd
   const std::string ssdHandle = sceneAttrs->getSemanticSceneHandle();
-  CORRADE_VERIFY(ssdHandle.find("semantic_descriptor_path1") !=
+  // Ssd handle is made from scene instance simplified handle
+  CORRADE_VERIFY(ssdHandle.find(sceneAttrs->getSimplifiedHandle()) !=
                  std::string::npos);
 
   //
@@ -424,18 +429,28 @@ void MetadataMediatorTest::testDataset0() {
   // end test LoadNavmesh
 
   ESP_WARNING() << "Starting test LoadSemanticScene";
-  // get map of semantic scene instances
-  const std::map<std::string, std::string> semanticMap =
-      MM_->getActiveSemanticSceneDescriptorMap();
-  // should have 2
-  CORRADE_COMPARE(semanticMap.size(), 2);
-  // should hold 2 keys
-  CORRADE_VERIFY(semanticMap.count("semantic_descriptor_path1") > 0);
-  CORRADE_VERIFY(semanticMap.count("semantic_descriptor_path2") > 0);
+
+  const auto semanticMgr = MM_->getSemanticAttributesManager();
+
+  // should have 5
+  CORRADE_COMPARE(semanticMgr->getNumObjects(), 5);
+
+  // should hold these 2 keys + semantic scene-named file-based json
+  CORRADE_VERIFY(
+      semanticMgr->getObjectLibHasHandle("semantic_descriptor_path1"));
+  CORRADE_VERIFY(
+      semanticMgr->getObjectLibHasHandle("semantic_descriptor_path2"));
+
   // each key should hold specific value
-  CORRADE_COMPARE(semanticMap.at("semantic_descriptor_path1"),
+  const auto semanticAttr1 =
+      semanticMgr->getObjectCopyByHandle("semantic_descriptor_path1");
+
+  CORRADE_COMPARE(semanticAttr1->getSemanticDescriptorFullPath(),
                   "test_semantic_descriptor_path1");
-  CORRADE_COMPARE(semanticMap.at("semantic_descriptor_path2"),
+
+  const auto semanticAttr2 =
+      semanticMgr->getObjectCopyByHandle("semantic_descriptor_path2");
+  CORRADE_COMPARE(semanticAttr2->getSemanticDescriptorFullPath(),
                   "test_semantic_descriptor_path2");
 
   // end test LoadSemanticScene
@@ -450,7 +465,7 @@ void MetadataMediatorTest::testDataset1() {
   ESP_WARNING() << "Starting testDataset1 : test LoadStages";
   const auto& stageAttributesMgr = MM_->getStageAttributesManager();
   int numStageHandles = stageAttributesMgr->getNumObjects();
-  // shoudld be 6 : one for default NONE stage, glob lookup yields 2 stages +
+  // should be 6 : one for default NONE stage, glob lookup yields 2 stages +
   // 2 modified and 1 new stage in scene dataset config
   CORRADE_COMPARE(numStageHandles, 6);
   // end test LoadStages
@@ -487,18 +502,22 @@ void MetadataMediatorTest::testDataset1() {
   // end test LoadSceneInstances
 
   ESP_WARNING() << "Starting test LoadArticulatedObjects";
-
+  const auto& aoAttributedsMgr = MM_->getAOAttributesManager();
+  int numAOHandles = aoAttributedsMgr->getNumObjects();
+  // verify # of urdf filepaths loaded - should be 8;
+  CORRADE_COMPARE(numAOHandles, 8);
   namespace Dir = Cr::Utility::Path;
-  // verify # of urdf filepaths loaded - should be 6;
-  const std::map<std::string, std::string>& urdfTestFilenames =
-      MM_->getArticulatedObjectModelFilenames();
-  CORRADE_COMPARE(urdfTestFilenames.size(), 6);
+
+  std::map<std::string, std::string> urdfTestFilenames =
+      aoAttributedsMgr->getArticulatedObjectModelFilenames();
+  CORRADE_COMPARE(urdfTestFilenames.size(), 8);
   // test that each stub name key corresponds to the actual file name passed
   // through the key making process
   for (std::map<std::string, std::string>::const_iterator iter =
            urdfTestFilenames.begin();
        iter != urdfTestFilenames.end(); ++iter) {
-    // TODO replace when model intherits from AbstractManagedObject and
+    ESP_WARNING() << "MM : urdf file name :" << iter->second;
+    // TODO replace when model inherits from AbstractManagedObject and
     // instances proper key synth methods.
     const std::string shortHandle =
         Dir::splitExtension(
@@ -525,11 +544,11 @@ void MetadataMediatorTest::testDataset1() {
   // end test LoadNavmesh
 
   ESP_WARNING() << "Starting test LoadSemanticScene";
-  // get map of semantic scene instances
-  const std::map<std::string, std::string> semanticMap =
-      MM_->getActiveSemanticSceneDescriptorMap();
+
+  const auto semanticMgr = MM_->getSemanticAttributesManager();
+  int numSemanticHandles = semanticMgr->getNumObjects();
   // should have 3
-  CORRADE_COMPARE(semanticMap.size(), 3);
+  CORRADE_COMPARE(numSemanticHandles, 3);
   // testLoadSemanticScene
   // display info report
   displayDSReports();
@@ -549,7 +568,7 @@ void MetadataMediatorTest::testDatasetDelete() {
   // verify not nullptr
   CORRADE_VERIFY(stageAttrMgr_DS1);
 
-  // load datsaet 0 and make active
+  // load dataset 0 and make active
   initDataset0();
   // get new active dataset
   const std::string nameDS0 = MM_->getActiveSceneDatasetName();

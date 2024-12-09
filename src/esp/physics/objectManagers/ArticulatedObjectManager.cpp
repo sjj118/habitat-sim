@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -12,7 +12,8 @@ ArticulatedObjectManager::ArticulatedObjectManager()
           PhysicsObjectBaseManager("ArticulatedObject") {
   // build this manager's copy constructor map
   this->copyConstructorMap_["ManagedArticulatedObject"] =
-      &ArticulatedObjectManager::createObjectCopy<ManagedArticulatedObject>;
+      &ArticulatedObjectManager::createObjCopyCtorMapEntry<
+          ManagedArticulatedObject>;
 
   // build the function pointers to proper wrapper construction methods, keyed
   // by the wrapper names
@@ -21,7 +22,7 @@ ArticulatedObjectManager::ArticulatedObjectManager()
           ManagedArticulatedObject>;
 
   this->copyConstructorMap_["ManagedBulletArticulatedObject"] =
-      &ArticulatedObjectManager::createObjectCopy<
+      &ArticulatedObjectManager::createObjCopyCtorMapEntry<
           ManagedBulletArticulatedObject>;
   managedObjTypeConstructorMap_["ManagedBulletArticulatedObject"] =
       &ArticulatedObjectManager::createPhysicsObjectWrapper<
@@ -37,34 +38,51 @@ ArticulatedObjectManager::addArticulatedObjectFromURDF(
     float massScale,
     bool forceReload,
     bool maintainLinkOrder,
+    bool intertiaFromURDF,
     const std::string& lightSetup) {
   if (auto physMgr = this->getPhysicsManager()) {
     int newAObjID = physMgr->addArticulatedObjectFromURDF(
-        filepath, fixedBase, globalScale, massScale, forceReload,
-        maintainLinkOrder, lightSetup);
+        filepath, nullptr, fixedBase, globalScale, massScale, forceReload,
+        maintainLinkOrder, intertiaFromURDF, lightSetup);
     return this->getObjectCopyByID(newAObjID);
   }
   return nullptr;
 }
 
 std::shared_ptr<ManagedArticulatedObject>
-ArticulatedObjectManager::addArticulatedObjectFromURDFWithDrawables(
-    const std::string& filepath,
-    gfx::DrawableGroup* drawables,
-    bool fixedBase,
-    float globalScale,
-    float massScale,
+ArticulatedObjectManager::addArticulatedObjectByHandle(
+    const std::string& attributesHandle,
     bool forceReload,
-    bool maintainLinkOrder,
     const std::string& lightSetup) {
   if (auto physMgr = this->getPhysicsManager()) {
-    int newAObjID = physMgr->addArticulatedObjectFromURDF(
-        filepath, drawables, fixedBase, globalScale, massScale, forceReload,
-        maintainLinkOrder, lightSetup);
+    int newAObjID = physMgr->addArticulatedObject(attributesHandle, nullptr,
+                                                  forceReload, lightSetup);
     return this->getObjectCopyByID(newAObjID);
   }
   return nullptr;
 }
+
+std::shared_ptr<ManagedArticulatedObject>
+ArticulatedObjectManager::addArticulatedObjectByID(
+    int attributesID,
+    bool forceReload,
+    const std::string& lightSetup) {
+  if (auto physMgr = this->getPhysicsManager()) {
+    int newAObjID = physMgr->addArticulatedObject(attributesID, nullptr,
+                                                  forceReload, lightSetup);
+    return this->getObjectCopyByID(newAObjID);
+  }
+  return nullptr;
+}
+
+std::shared_ptr<ManagedArticulatedObject>
+ArticulatedObjectManager::copyArticulatedObjectByID(int aObjectID) {
+  if (auto physMgr = this->getPhysicsManager()) {
+    int newAObjID = physMgr->cloneExistingArticulatedObject(aObjectID);
+    return this->getObjectCopyByID(newAObjID);
+  }
+  return nullptr;
+}  // ArticulatedObjectManager::copyArticulatedObjectByID
 
 }  // namespace physics
 }  // namespace esp

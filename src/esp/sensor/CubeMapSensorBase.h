@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -47,12 +47,19 @@ struct CubeMapSensorBaseSpec : public VisualSensorSpec {
 
 class CubeMapSensorBase : public VisualSensor {
  public:
-  gfx::RenderCamera* getRenderCamera() = delete;
+  gfx::RenderCamera* getRenderCamera() const override { return nullptr; }
 
   /**
    * @brief destructor
    */
   ~CubeMapSensorBase() override = default;
+
+  /**
+   * @brief Return this sensor's projection matrix
+   */
+  Mn::Matrix4 getProjectionMatrix() const override {
+    return cubeMapCamera_->projectionMatrix();
+  }
 
  protected:
   /**

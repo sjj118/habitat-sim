@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -7,8 +7,6 @@ import random
 import sys
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
-
-import numpy as np
 
 flags = sys.getdlopenflags()
 sys.setdlopenflags(flags | ctypes.RTLD_GLOBAL)
@@ -21,8 +19,8 @@ import habitat_sim
 import habitat_sim.physics as phy
 from examples.fairmotion_interface import FairmotionInterface
 from examples.fairmotion_interface_utils import Activity
-from examples.settings import default_sim_settings, make_cfg
 from habitat_sim.logging import logger
+from habitat_sim.utils.settings import default_sim_settings, make_cfg
 
 
 class FairmotionSimInteractiveViewer(HabitatSimInteractiveViewer):
@@ -73,7 +71,7 @@ class FairmotionSimInteractiveViewer(HabitatSimInteractiveViewer):
         # perpetual motion generator
         self.perpetual = False
 
-        # FPOV for farimotion character
+        # FPOV for fairmotion character
         self.first_person = False
 
         self.navmesh_config_and_recompute()
@@ -121,8 +119,8 @@ class FairmotionSimInteractiveViewer(HabitatSimInteractiveViewer):
             self.sim_settings["height"],
             self.sim_settings["width"],
         ]
-        camera_sensor_spec.position = np.array([0, 0, 0])
-        camera_sensor_spec.orientation = np.array([0, 0, 0])
+        camera_sensor_spec.position = mn.Vector3(0.0, 0.0, 0.0)
+        camera_sensor_spec.orientation = mn.Vector3(0.0, 0.0, 0.0)
         camera_sensor_spec.uuid = "fpov_sensor"
 
         agent_config = habitat_sim.agent.AgentConfiguration(
@@ -442,7 +440,7 @@ class FairmotionSimInteractiveViewer(HabitatSimInteractiveViewer):
 
     def cycle_mouse_mode(self):
         """
-        Cycles through mouse modes that belong to the MouseMode emun.
+        Cycles through mouse modes that belong to the MouseMode enum.
         """
         self.mouse_interaction = MouseMode(
             (self.mouse_interaction.value + 1) % len(MouseMode)
@@ -584,10 +582,10 @@ class FairmotionSimInteractiveViewer(HabitatSimInteractiveViewer):
         self.navmesh_settings = habitat_sim.NavMeshSettings()
         self.navmesh_settings.set_defaults()
         self.navmesh_settings.agent_radius = 0.30
+        self.navmesh_settings.include_static_objects = True
         self.sim.recompute_navmesh(
             self.sim.pathfinder,
             self.navmesh_settings,
-            include_static_objects=True,
         )
 
         # Set all articulated objects back to original motion_type
@@ -659,7 +657,7 @@ In GRAB mode (with 'enable-physics'):
 
 In MOTION mode (with 'enable-physics'):
     LEFT:
-        Click a Fairmotion character to set it as selected or clcik anywhere else to deselect.
+        Click a Fairmotion character to set it as selected or click anywhere else to deselect.
     RIGHT (With selected Fairmotion character):
         Click anywhere on the scene to translate a selected Fairmotion character to the clicked location.
     WHEEL (with selected Fairmotion character):
@@ -707,7 +705,7 @@ Key Commands:
                 (+ ALT) Move to random place in path with character.
 
         Action Sequencing:
-        'i':    Load model to playout action orders pendng in order queue.
+        'i':    Load model to playout action orders pending in order queue.
         'u':    Push random action orders from Action Order Library to order queue.
 =========================================================
 """

@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -37,10 +37,10 @@ INPUT_PAGES = [
     "pages/attributesJSON.rst",
     "pages/stereo-agent.rst",
     "pages/lighting-setups.rst",
-    "pages/image-extractor.rst",
     "pages/asset-viewer-tutorial.rst",
     "pages/managed-rigid-object-tutorial.rst",
     "pages/logging.rst",
+    "pages/coordinate-frame-tutorial.rst",
 ]
 
 PLUGINS = [
@@ -79,9 +79,9 @@ LINKS_NAVBAR1 = [
             ("Attributes JSON", "attributesJSON"),
             ("Stereo agent", "stereo-agent"),
             ("Lighting Setups", "lighting-setups"),
-            ("Image extraction", "image-extractor"),
             ("View Assets in Habitat-sim", "asset-viewer-tutorial"),
             ("Managed Rigid Object Tutorial", "managed-rigid-object-tutorial"),
+            ("Coordinate Frame Tutorial", "coordinate-frame-tutorial"),
         ],
     ),
     ("Classes", "classes", []),

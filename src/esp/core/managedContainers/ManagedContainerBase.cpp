@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -15,8 +15,7 @@ namespace managedContainers {
 bool ManagedContainerBase::setLock(const std::string& objectHandle, bool lock) {
   // if managed object does not currently exist then do not attempt to modify
   // its lock state
-  if (!checkExistsWithMessage(objectHandle,
-                              "<" + this->objectType_ + ">::setLock")) {
+  if (!checkExistsWithMessage(objectHandle, "setLock")) {
     return false;
   }
   // if setting lock else clearing lock
@@ -34,7 +33,8 @@ std::string ManagedContainerBase::getRandomObjectHandlePerType(
   std::size_t numVals = mapOfHandles.size();
   if (numVals == 0) {
     ESP_ERROR() << "Attempting to get a random" << type << objectType_
-                << "managed object handle but none are loaded; Aboring";
+                << "managed object handle but none are loaded, so no handles "
+                   "will be returned.";
     return "";
   }
   int randIDX = rand() % numVals;
@@ -92,12 +92,13 @@ std::vector<std::string> getHandlesBySubStringPerTypeInternal(
              mapOfHandles.begin();
          iter != mapOfHandles.end(); ++iter) {
       std::string rawKey = std::get<Idx>(*iter);
-      std::string key = Cr::Utility::String::lowercase(rawKey);
       // be sure that key is big enough to search in (otherwise find has
       // undefined behavior)
-      if (key.length() < strSize) {
+      if (rawKey.length() < strSize) {
         continue;
       }
+      std::string key = Cr::Utility::String::lowercase(rawKey);
+
       bool found = (std::string::npos != key.find(strToLookFor));
       if (found == contains) {
         // if found and searching for contains, or not found and searching for
@@ -177,7 +178,7 @@ int ManagedContainerBase::getObjectIDByHandleOrNew(
     ESP_ERROR(Magnum::Debug::Flag::NoSpace)
         << "<" << this->objectType_ << "> : No " << objectType_
         << " managed object with handle " << objectHandle
-        << " exists. Aborting.";
+        << " exists, so aborting ID query.";
     return ID_UNDEFINED;
   }
   return getUnusedObjectID();

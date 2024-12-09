@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -48,7 +48,7 @@ JsonDocument parseJsonFile(const std::string& file);
 JsonDocument parseJsonString(const std::string& jsonString);
 
 //! Return string representation of given JsonDocument
-std::string jsonToString(const JsonDocument& d);
+std::string jsonToString(const JsonDocument& d, int maxDecimalPlaces = -1);
 
 //! Return Vec3f coordinates representation of given JsonObject of array type
 esp::vec3f jsonToVec3f(const JsonGenericValue& jsonArray);
@@ -72,7 +72,7 @@ bool jsonIntoSetter(const JsonGenericValue& d,
                     std::function<void(T)> setter) {
   T val;
   if (readMember(d, tag, val)) {
-    setter(val);
+    setter(std::move(val));
     return true;
   }
   return false;

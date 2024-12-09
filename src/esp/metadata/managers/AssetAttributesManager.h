@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -11,7 +11,7 @@
  * primitives.
  */
 
-#include "AttributesManagerBase.h"
+#include "AbstractAttributesManager.h"
 #include "esp/metadata/attributes/PrimitiveAssetAttributes.h"
 
 namespace esp {
@@ -75,12 +75,10 @@ enum class PrimObjTypes : uint32_t {
   END_PRIM_OBJ_TYPES
 };
 namespace managers {
-using core::managedContainers::ManagedFileBasedContainer;
-using core::managedContainers::ManagedObjectAccess;
 
 class AssetAttributesManager
-    : public AttributesManager<attributes::AbstractPrimitiveAttributes,
-                               ManagedObjectAccess::Copy> {
+    : public AbstractAttributesManager<attributes::AbstractPrimitiveAttributes,
+                                       ManagedObjectAccess::Copy> {
  public:
   /**
    * @brief Constant Map holding names of all Magnum 3D primitive classes
@@ -129,6 +127,17 @@ class AssetAttributesManager
       const io::JsonGenericValue& jsonConfig) override;
 
   /**
+   * @brief This function will be called to finalize attributes' paths before
+   * registration, moving fully qualified paths to the appropriate hidden
+   * attribute fields. This can also be called without registration to make sure
+   * the paths specified in an attributes are properly configured.
+   * @param attributes The attributes to be filtered.
+   */
+  void finalizeAttrPathsBeforeRegister(
+      CORRADE_UNUSED const attributes::AbstractPrimitiveAttributes::ptr&
+          attributes) const override {}
+
+  /**
    * @brief Method to take an existing attributes and set its values from passed
    * json config file.
    * @param attribs (out) an existing attributes to be modified.
@@ -151,6 +160,23 @@ class AssetAttributesManager
    * @return The attributes that most closely matches the given handle.
    */
   attributes::AbstractPrimitiveAttributes::ptr createTemplateFromHandle(
+      const std::string& templateHandle,
+      bool registerTemplate = true);
+
+  /**
+   * @brief Retrieves the template specified by the supplied handle, creating
+   * the template if none exists. Since the primitive asset attributes templates
+   * encode their structure in their handles, and these handles are not user
+   * editable, a properly configured handle can be used to build a template.
+   * @param templateHandle The template handle to use to create the attributes.
+   * @param registerTemplate whether to add this template to the library.
+   * If the user is going to edit this template, this should be false - any
+   * subsequent editing will require re-registration. Defaults to true. If
+   * specified as true, then this function returns a copy of the registered
+   * template.
+   * @return The attributes that most closely matches the given handle.
+   */
+  attributes::AbstractPrimitiveAttributes::cptr getOrCreateTemplateFromHandle(
       const std::string& templateHandle,
       bool registerTemplate = true);
 
@@ -193,12 +219,12 @@ class AssetAttributesManager
       bool contains = true) const {
     if (primType == PrimObjTypes::END_PRIM_OBJ_TYPES) {
       ESP_ERROR() << "Illegal primtitive type "
-                     "name PrimObjTypes::END_PRIM_OBJ_TYPES. Aborting.";
+                     "name PrimObjTypes::END_PRIM_OBJ_TYPES, so no template "
+                     "handles exist to retrieve.";
       return {};
     }
     std::string subStr = PrimitiveNames3DMap.at(primType);
-    return this->getObjectHandlesBySubStringPerType(this->objectLibKeyByID_,
-                                                    subStr, contains, true);
+    return this->getAllObjectHandlesBySubStringPerType(subStr, contains, true);
   }  // AssetAttributeManager::getTemplateHandlesByPrimType
 
   /**
@@ -414,25 +440,25 @@ class AssetAttributesManager
       override {
     ESP_WARNING()
         << "Overriding default objects for PrimitiveAssetAttributes not "
-           "currently supported.  Aborting.";
+           "currently supported so default is set to nullptr.";
     this->defaultObj_ = nullptr;
   }  // AssetAttributesManager::setDefaultObject
 
- protected:
   /**
    * @brief Check if currently configured primitive asset template library has
    * passed handle.
    * @param handle String name of primitive asset attributes desired
    * @return whether handle exists or not in asset attributes library
    */
-  bool isValidPrimitiveAttributes(const std::string& handle) override {
+  bool isValidPrimitiveAttributes(const std::string& handle) const {
     return this->getObjectLibHasHandle(handle);
   }
 
+ protected:
   /**
    * @brief This method will perform any necessary updating that is
-   * attributesManager-specific upon template removal, such as removing a
-   * specific template handle from the list of file-based template handles in
+   * AbstractAttributesManager-specific upon template removal, such as removing
+   * a specific template handle from the list of file-based template handles in
    * ObjectAttributesManager.  This should only be called @ref
    * esp::core::managedContainers::ManagedContainerBase.
    *
@@ -461,24 +487,42 @@ class AssetAttributesManager
       return false;
     }
     return true;
-  }  // AttributesManager::verifyTemplateHandle
+  }  // AbstractAttributesManager::verifyTemplateHandle
 
   /**
-   * @brief Add an @ref esp::metadata::attributes::AbstractPrimitiveAttributes
-   * object to the @ref objectLibrary_.
+   * @brief This method will perform any essential updating to the managed
+   * object before registration is performed. If this updating fails,
+   * registration will also fail. Specifically, it will set the primitive
+   * attributes template's registration handle.
    *
    * @param attributesTemplate The attributes template.
    * @param objectHandle Not used for asset attributes templates - handle is
    * derived by configuration.
    * @param forceRegistration Will register object even if conditional
    * registration checks fail.
-   * @return The index in the @ref objectLibrary_ of object
-   * template.
+   * @return Whether the preregistration has succeeded and what handle to use to
+   * register the object if it has.
    */
-  int registerObjectFinalize(
+  core::managedContainers::ManagedObjectPreregistration
+  preRegisterObjectFinalize(
       attributes::AbstractPrimitiveAttributes::ptr attributesTemplate,
       CORRADE_UNUSED const std::string& objectHandle,
       CORRADE_UNUSED bool forceRegistration) override;
+
+  /**
+   * @brief Not required for this manager.
+   *
+   * This method will perform any final manager-related handling after
+   * successfully registering an object.
+   *
+   * See @ref esp::attributes::managers::ObjectAttributesManager for an example.
+   *
+   * @param objectID the ID of the successfully registered managed object
+   * @param objectHandle The name of the managed object
+   */
+  void postRegisterObjectHandling(
+      CORRADE_UNUSED int objectID,
+      CORRADE_UNUSED const std::string& objectHandle) override {}
 
   /**
    * @brief Used Internally.  Create and configure newly-created attributes with
@@ -495,7 +539,8 @@ class AssetAttributesManager
     auto primTypeCtorIter = primTypeConstructorMap_.find(primClassName);
     if (primTypeCtorIter == primTypeConstructorMap_.end()) {
       ESP_ERROR() << "No primitive class" << primClassName
-                  << "exists in Magnum::Primitives. Aborting.";
+                  << "exists in Magnum::Primitives, so unable to initialize "
+                     "new Primitive object.";
       return nullptr;
     }
     // these attributes ignore any default setttings.
@@ -513,7 +558,8 @@ class AssetAttributesManager
     if (primitiveType == PrimObjTypes::END_PRIM_OBJ_TYPES) {
       ESP_ERROR() << "Cannot instantiate "
                      "attributes::AbstractPrimitiveAttributes object for "
-                     "PrimObjTypes::END_PRIM_OBJ_TYPES. Aborting.";
+                     "PrimObjTypes::END_PRIM_OBJ_TYPES, so create Primitive "
+                     "Attributes failed.";
       return nullptr;
     }
     int idx = static_cast<int>(primitiveType);
@@ -521,7 +567,7 @@ class AssetAttributesManager
   }  // AssetAttributeManager::createPrimAttributes
 
   /**
-   * @brief Any Assset-attributes-specific resetting that needs to happen on
+   * @brief Any Asset-attributes-specific resetting that needs to happen on
    * reset.
    */
   void resetFinalize() override {

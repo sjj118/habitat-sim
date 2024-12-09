@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -10,7 +10,6 @@
 #include "esp/core/Esp.h"
 #include "esp/core/Random.h"
 #include "esp/nav/PathFinder.h"
-#include "esp/scene/ObjectControls.h"
 #include "esp/scene/SceneGraph.h"
 
 #include "configure.h"
@@ -20,7 +19,7 @@ namespace Cr = Corrade;
 namespace {
 
 void printPathPoint(int run, int step, const esp::vec3f& p, float distance) {
-  ESP_VERY_VERBOSE() << run << "," << step << "," << Mn::Vector3{p} << ","
+  ESP_VERY_VERBOSE() << run << "," << step << "," << Magnum::Vector3{p} << ","
                      << distance;
 }
 

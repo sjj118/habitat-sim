@@ -1,3 +1,7 @@
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 import argparse
 import glob
 import itertools
@@ -133,7 +137,7 @@ def _gltf2unlit(gltf_name: str):
 
         # Drop everything except base color and base color texture
         pbrMetallicRoughness = material["pbrMetallicRoughness"]
-        for key in pbrMetallicRoughness.keys():
+        for key in pbrMetallicRoughness:
             if key not in ["baseColorFactor", "baseColorTexture"]:
                 del pbrMetallicRoughness[key]
         for key in [
@@ -185,7 +189,6 @@ def finalize(output_folder: str, rename_basis: bool) -> None:
         for basis_mesh in glob.glob(
             osp.join(output_folder, "**", "*.basis.glb"), recursive=True
         ):
-
             # skip false positives in the working directories which won't actually exist
             if "hab_basis_tool/" in basis_mesh:
                 # print(f"...skipping {basis_mesh}")
@@ -224,7 +227,7 @@ def clean_up(folder: str, args) -> None:
 
 def main():
     args = build_parser().parse_args()
-    # Doing a which first to also suport just passing magnum-imageconverter
+    # Doing a which first to also support just passing magnum-imageconverter
     # if that is installed globally
     args.magnum_imageconverter = shutil.which(args.magnum_imageconverter)
     args.magnum_imageconverter = osp.realpath(args.magnum_imageconverter)

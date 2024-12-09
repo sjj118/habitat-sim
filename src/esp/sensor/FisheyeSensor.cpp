@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 #include "FisheyeSensor.h"
@@ -52,18 +52,14 @@ Magnum::Vector2 computePrincipalPointOffset(const FisheyeSensorSpec& spec) {
   if (bool(spec.principalPointOffset)) {
     return *spec.principalPointOffset;
   }
-  auto res = spec.resolution.cast<float>();
-  return Mn::Vector2(res[0], res[1]) * 0.5f;
+  return Mn::Vector2{spec.resolution} * 0.5f;
 }
 
 FisheyeSensor::FisheyeSensor(scene::SceneNode& cameraNode,
                              const FisheyeSensorSpec::ptr& spec)
     : CubeMapSensorBase(cameraNode, spec) {
-  switch (fisheyeSensorSpec_->fisheyeModelType) {
-    case FisheyeSensorModelType::DoubleSphere: {
-      specSanityCheck<FisheyeSensorDoubleSphereSpec>(fisheyeSensorSpec_.get());
-    } break;
-  };
+  // Currently only model type supported is FisheyeSensorDoubleSphere
+  specSanityCheck<FisheyeSensorDoubleSphereSpec>(fisheyeSensorSpec_.get());
 }
 
 bool FisheyeSensorSpec::operator==(const FisheyeSensorSpec& a) const {

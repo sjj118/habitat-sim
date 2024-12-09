@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -135,6 +135,12 @@ class AbstractManagedPhysicsObject
     }
     return nullptr;
   }
+  esp::metadata::attributes::MarkerSets::ptr getMarkerSets() const {
+    if (auto sp = this->getObjectReference()) {
+      return sp->getMarkerSets();
+    }
+    return nullptr;
+  }
   // ==== Transformations ===
 
   Magnum::Matrix4 getTransformation() const {
@@ -162,6 +168,74 @@ class AbstractManagedPhysicsObject
       sp->setTranslation(vector);
     }
   }  // setTranslation
+
+  /**
+   * @brief Given the list of passed points in this object's local space, return
+   * those points transformed to world space.
+   * @param points vector of points in object local space
+   * @param linkID The link ID for the object (only pertinent for articulated
+   * objects). Ignored for rigid objects and stages.
+   * @return vector of points transformed into world space
+   */
+  std::vector<Mn::Vector3> transformLocalPointsToWorld(
+      const std::vector<Mn::Vector3>& points,
+      int linkID) const {
+    if (auto sp = this->getObjectReference()) {
+      return sp->transformLocalPointsToWorld(points, linkID);
+    }
+    return {};
+  }
+
+  /**
+   * @brief Given the list of passed points in world space, return
+   * those points transformed to this object's local space.
+   * @param points vector of points in world space
+   * @param linkID The link ID for the object (only pertinent for articulated
+   * objects). Ignored for rigid objects and stages.
+   * @return vector of points transformed to be in local space
+   */
+  std::vector<Mn::Vector3> transformWorldPointsToLocal(
+      const std::vector<Mn::Vector3>& points,
+      int linkID) const {
+    if (auto sp = this->getObjectReference()) {
+      return sp->transformWorldPointsToLocal(points, linkID);
+    }
+    return {};
+  }
+
+  /**
+   * @brief Retrieves the hierarchical map-of-map-of-maps containing
+   * the @ref MarkerSets constituent marker points, in local space
+   * (which is the space they are given in).
+   */
+  std::unordered_map<
+      std::string,
+      std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::vector<Mn::Vector3>>>>
+  getMarkerPointsLocal() const {
+    if (auto sp = this->getObjectReference()) {
+      return sp->getMarkerPointsLocal();
+    }
+    return {};
+  }
+
+  /**
+   * @brief Retrieves the hierarchical map-of-map-of-maps containing
+   * the @ref MarkerSets constituent marker points, in local space
+   * (which is the space they are given in).
+   */
+  std::unordered_map<
+      std::string,
+      std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::vector<Mn::Vector3>>>>
+  getMarkerPointsGlobal() const {
+    if (auto sp = this->getObjectReference()) {
+      return sp->getMarkerPointsGlobal();
+    }
+    return {};
+  }
 
   Magnum::Quaternion getRotation() const {
     if (auto sp = this->getObjectReference()) {
@@ -272,6 +346,24 @@ class AbstractManagedPhysicsObject
            getPhyObjInfoHeaderInternal();
   }
 
+  /** @brief Return whether or not this object is articulated. */
+  bool isArticulated() const {
+    if (auto sp = this->getObjectReference()) {
+      return sp->isArticulated();
+    }
+    return false;
+  }
+
+  /** @brief Return the local axis-aligned bounding box of the this object.
+   * Articulated objects Will recompute the aabb when the kinematic state has
+   * been changed between queries.*/
+  Mn::Range3D getAabb() {
+    if (auto sp = this->getObjectReference()) {
+      return sp->getAabb();
+    }
+    return Mn::Range3D();
+  }
+
   /**
    * @brief Retrieve a comma-separated informational string about the contents
    * of this managed object.
@@ -316,7 +408,7 @@ class AbstractManagedPhysicsObject
     std::shared_ptr<T> sp = weakObjRef_.lock();
     if (!sp) {
       // TODO: Verify object is removed from manager here?
-      ESP_WARNING()
+      ESP_ERROR()
           << "This object no longer exists.  Please delete any variable "
              "references.";
     }

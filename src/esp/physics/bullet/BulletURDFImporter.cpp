@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -27,14 +27,14 @@ namespace physics {
 static float gUrdfDefaultCollisionMargin = 0.001;
 
 btCollisionShape* BulletURDFImporter::convertURDFToCollisionShape(
-    const io::URDF::CollisionShape* collision,
+    const metadata::URDF::CollisionShape* collision,
     std::vector<std::unique_ptr<btCollisionShape>>& linkChildShapes) {
   ESP_VERY_VERBOSE() << "convertURDFToCollisionShape";
 
   btCollisionShape* shape = nullptr;
 
   switch (collision->m_geometry.m_type) {
-    case io::URDF::GEOM_PLANE: {
+    case metadata::URDF::GEOM_PLANE: {
       Mn::Vector3 planeNormal = collision->m_geometry.m_planeNormal;
       float planeConstant = 0;  // not available?
       auto plane = std::make_unique<btStaticPlaneShape>(btVector3(planeNormal),
@@ -44,7 +44,7 @@ btCollisionShape* BulletURDFImporter::convertURDFToCollisionShape(
       linkChildShapes.emplace_back(std::move(plane));
       break;
     }
-    case io::URDF::GEOM_CAPSULE: {
+    case metadata::URDF::GEOM_CAPSULE: {
       float radius = collision->m_geometry.m_capsuleRadius;
       float height = collision->m_geometry.m_capsuleHeight;
       auto capsuleShape = std::make_unique<btCapsuleShapeZ>(radius, height);
@@ -54,7 +54,7 @@ btCollisionShape* BulletURDFImporter::convertURDFToCollisionShape(
       break;
     }
 
-    case io::URDF::GEOM_CYLINDER: {
+    case metadata::URDF::GEOM_CYLINDER: {
       float cylRadius = collision->m_geometry.m_capsuleRadius;
       float cylHalfLength = 0.5 * collision->m_geometry.m_capsuleHeight;
       // if (m_data->m_flags & CUF_USE_IMPLICIT_CYLINDER) TODO: why not? Should
@@ -63,10 +63,11 @@ btCollisionShape* BulletURDFImporter::convertURDFToCollisionShape(
       btVector3 halfExtents(cylRadius, cylRadius, cylHalfLength);
       auto cylZShape = std::make_unique<btCylinderShapeZ>(halfExtents);
       shape = cylZShape.get();
+      shape->setMargin(gUrdfDefaultCollisionMargin);
       linkChildShapes.emplace_back(std::move(cylZShape));
       break;
     }
-    case io::URDF::GEOM_BOX: {
+    case metadata::URDF::GEOM_BOX: {
       btVector3 extents = btVector3(collision->m_geometry.m_boxSize);
       auto boxShape = std::make_unique<btBoxShape>(extents * 0.5f);
       // TODO: off for now, but may be necessary for better contacts?
@@ -81,7 +82,7 @@ btCollisionShape* BulletURDFImporter::convertURDFToCollisionShape(
       linkChildShapes.emplace_back(std::move(boxShape));
       break;
     }
-    case io::URDF::GEOM_SPHERE: {
+    case metadata::URDF::GEOM_SPHERE: {
       float radius = collision->m_geometry.m_sphereRadius;
       auto sphereShape = std::make_unique<btSphereShape>(radius);
       shape = sphereShape.get();
@@ -89,7 +90,7 @@ btCollisionShape* BulletURDFImporter::convertURDFToCollisionShape(
       linkChildShapes.emplace_back(std::move(sphereShape));
       break;
     }
-    case io::URDF::GEOM_MESH: {
+    case metadata::URDF::GEOM_MESH: {
       const std::vector<assets::CollisionMeshData>& meshGroup =
           resourceManager_.getCollisionMesh(
               collision->m_geometry.m_meshFileName);
@@ -133,7 +134,7 @@ btCompoundShape* BulletURDFImporter::convertLinkCollisionShapes(
   auto link = activeModel_->getLink(urdfLinkIndex);
 
   for (size_t v = 0; v < link->m_collisionArray.size(); ++v) {
-    const io::URDF::CollisionShape& col = link->m_collisionArray[v];
+    const metadata::URDF::CollisionShape& col = link->m_collisionArray[v];
     btCollisionShape* childShape =
         convertURDFToCollisionShape(&col, linkChildShapes);
     if (childShape) {
@@ -153,16 +154,17 @@ int BulletURDFImporter::getCollisionGroupAndMask(int urdfLinkIndex,
                                                  int& colGroup,
                                                  int& colMask) const {
   int result = 0;
-  std::shared_ptr<io::URDF::Link> link = activeModel_->getLink(urdfLinkIndex);
+  std::shared_ptr<metadata::URDF::Link> link =
+      activeModel_->getLink(urdfLinkIndex);
   for (size_t v = 0; v < link->m_collisionArray.size(); ++v) {
-    const io::URDF::CollisionShape& col = link->m_collisionArray[v];
-    if ((col.m_flags & io::URDF::HAS_COLLISION_GROUP) != 0) {
+    const metadata::URDF::CollisionShape& col = link->m_collisionArray[v];
+    if ((col.m_flags & metadata::URDF::HAS_COLLISION_GROUP) != 0) {
       colGroup = col.m_collisionGroup;
-      result |= io::URDF::HAS_COLLISION_GROUP;
+      result |= metadata::URDF::HAS_COLLISION_GROUP;
     }
-    if ((col.m_flags & io::URDF::HAS_COLLISION_MASK) != 0) {
+    if ((col.m_flags & metadata::URDF::HAS_COLLISION_MASK) != 0) {
       colMask = col.m_collisionMask;
-      result |= io::URDF::HAS_COLLISION_MASK;
+      result |= metadata::URDF::HAS_COLLISION_MASK;
     }
   }
   return result;
@@ -192,8 +194,9 @@ void BulletURDFImporter::getAllIndices(
   int mbIndex = cache->getMbIndexFromUrdfIndex(urdfLinkIndex);
   cp.m_mbIndex = mbIndex;
   cp.m_parentIndex = parentIndex;
-  int parentMbIndex =
-      parentIndex >= 0 ? cache->getMbIndexFromUrdfIndex(parentIndex) : -1;
+  int parentMbIndex = parentIndex >= 0
+                          ? cache->getMbIndexFromUrdfIndex(parentIndex)
+                          : BASELINK_ID;
   cp.m_parentMBIndex = parentMbIndex;
 
   allIndices.emplace_back(std::move(cp));
@@ -206,7 +209,7 @@ void BulletURDFImporter::getAllIndices(
   }
 }
 
-void BulletURDFImporter::computeParentIndices(URDF2BulletCached& bulletCache,
+void BulletURDFImporter::computeParentIndices(URDFToBulletCached& bulletCache,
                                               int urdfLinkIndex,
                                               int urdfParentIndex) {
   bulletCache.m_urdfLinkParentIndices[urdfLinkIndex] = urdfParentIndex;
@@ -220,10 +223,28 @@ void BulletURDFImporter::computeParentIndices(URDF2BulletCached& bulletCache,
   }
 }
 
-void BulletURDFImporter::initURDF2BulletCache() {
+void BulletURDFImporter::initURDFToBulletCache(
+    const esp::metadata::attributes::ArticulatedObjectAttributes::ptr&
+        artObjAttributes) {
+  // before initializing the URDF, import all necessary assets in advance.
+  importURDFAssets(artObjAttributes);
+
+  setFixedBase(artObjAttributes->getBaseType() ==
+               metadata::attributes::ArticulatedObjectBaseType::Fixed);
+
+  flags = 0;
+  if (artObjAttributes->getLinkOrder() ==
+      metadata::attributes::ArticulatedObjectLinkOrder::URDFOrder) {
+    flags |= CUF_MAINTAIN_LINK_ORDER;
+  }
+  if (artObjAttributes->getInertiaSource() ==
+      metadata::attributes::ArticulatedObjectInertiaSource::URDF) {
+    flags |= CUF_USE_URDF_INERTIA;
+  }
+
   // compute the number of links, and compute parent indices array (and possibly
   // other cached ?)
-  cache = std::make_shared<URDF2BulletCached>();
+  cache = std::make_shared<URDFToBulletCached>();
   cache->m_totalNumJoints1 = 0;
 
   int rootLinkIndex = getRootLinkIndex();
@@ -235,13 +256,12 @@ void BulletURDFImporter::initURDF2BulletCache() {
     cache->m_urdfLinkIndices2BulletLinkIndices.resize(
         numTotalLinksIncludingBase);
     cache->m_urdfLinkLocalInertialFrames.resize(numTotalLinksIncludingBase);
-
-    cache->m_currentMultiBodyLinkIndex =
-        -1;  // multi body base has 'link' index -1
+    // multi body base has 'link' index BASELINK_ID
+    cache->m_currentMultiBodyLinkIndex = BASELINK_ID;
 
     bool maintainLinkOrder = (flags & CUF_MAINTAIN_LINK_ORDER) != 0;
     if (maintainLinkOrder) {
-      URDF2BulletCached cache2 = *cache;
+      URDFToBulletCached cache2 = *cache;
 
       computeParentIndices(cache2, rootLinkIndex, -2);
 
@@ -255,32 +275,81 @@ void BulletURDFImporter::initURDF2BulletCache() {
   }
 }
 
-void processContactParameters(const io::URDF::LinkContactInfo& contactInfo,
-                              btCollisionObject* col) {
-  if ((contactInfo.m_flags & io::URDF::CONTACT_HAS_LATERAL_FRICTION) != 0) {
+void processContactParameters(
+    const metadata::URDF::LinkContactInfo& contactInfo,
+    btCollisionObject* col) {
+  if ((contactInfo.m_flags & metadata::URDF::CONTACT_HAS_LATERAL_FRICTION) !=
+      0) {
     col->setFriction(contactInfo.m_lateralFriction);
   }
-  if ((contactInfo.m_flags & io::URDF::CONTACT_HAS_RESTITUTION) != 0) {
+  if ((contactInfo.m_flags & metadata::URDF::CONTACT_HAS_RESTITUTION) != 0) {
     col->setRestitution(contactInfo.m_restitution);
   }
 
-  if ((contactInfo.m_flags & io::URDF::CONTACT_HAS_ROLLING_FRICTION) != 0) {
+  if ((contactInfo.m_flags & metadata::URDF::CONTACT_HAS_ROLLING_FRICTION) !=
+      0) {
     col->setRollingFriction(contactInfo.m_rollingFriction);
   }
-  if ((contactInfo.m_flags & io::URDF::CONTACT_HAS_SPINNING_FRICTION) != 0) {
+  if ((contactInfo.m_flags & metadata::URDF::CONTACT_HAS_SPINNING_FRICTION) !=
+      0) {
     col->setSpinningFriction(contactInfo.m_spinningFriction);
   }
-  if ((contactInfo.m_flags & io::URDF::CONTACT_HAS_STIFFNESS_DAMPING) != 0) {
+  if ((contactInfo.m_flags & metadata::URDF::CONTACT_HAS_STIFFNESS_DAMPING) !=
+      0) {
     col->setContactStiffnessAndDamping(contactInfo.m_contactStiffness,
                                        contactInfo.m_contactDamping);
   }
-  if ((contactInfo.m_flags & io::URDF::CONTACT_HAS_FRICTION_ANCHOR) != 0) {
+  if ((contactInfo.m_flags & metadata::URDF::CONTACT_HAS_FRICTION_ANCHOR) !=
+      0) {
     col->setCollisionFlags(col->getCollisionFlags() |
                            btCollisionObject::CF_HAS_FRICTION_ANCHOR);
   }
 }
 
-Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
+void BulletURDFImporter::convertURDFToBullet(
+    const Mn::Matrix4& parentTransformInWorldSpace,
+    btMultiBodyDynamicsWorld* world1,
+    std::map<int, std::unique_ptr<btCompoundShape>>& linkCompoundShapes,
+    std::map<int, std::vector<std::unique_ptr<btCollisionShape>>>&
+        linkChildShapes) {
+  int urdfLinkIndex = getRootLinkIndex();
+
+  bool recursive = (flags & CUF_MAINTAIN_LINK_ORDER) == 0;
+
+  if (recursive) {
+    // NOTE: recursive path only
+    convertURDFToBulletInternal(urdfLinkIndex, parentTransformInWorldSpace,
+                                world1, linkCompoundShapes, linkChildShapes,
+                                recursive);
+  } else {
+    std::vector<Mn::Matrix4> parentTransforms;
+    parentTransforms.resize(urdfLinkIndex + 1);
+    parentTransforms[urdfLinkIndex] = parentTransformInWorldSpace;
+    std::vector<childParentIndex> allIndices;
+
+    getAllIndices(urdfLinkIndex, BASELINK_ID, allIndices);
+    std::sort(allIndices.begin(), allIndices.end(),
+              [](const childParentIndex& a, const childParentIndex& b) {
+                return a.m_index < b.m_index;
+              });
+
+    if (allIndices.size() + 1 > parentTransforms.size()) {
+      parentTransforms.resize(allIndices.size() + 1);
+    }
+    for (size_t i = 0; i < allIndices.size(); ++i) {
+      int urdfLinkIndex = allIndices[i].m_index;
+      int parentIndex = allIndices[i].m_parentIndex;
+      Mn::Matrix4 parentTr = parentIndex >= 0 ? parentTransforms[parentIndex]
+                                              : parentTransformInWorldSpace;
+      Mn::Matrix4 tr = convertURDFToBulletInternal(urdfLinkIndex, parentTr,
+                                                   world1, linkCompoundShapes,
+                                                   linkChildShapes, recursive);
+      parentTransforms[urdfLinkIndex] = tr;
+    }
+  }
+}  // BulletURDFImporter::convertURDFToBullet
+
+Mn::Matrix4 BulletURDFImporter::convertURDFToBulletInternal(
     int urdfLinkIndex,
     const Mn::Matrix4& parentTransformInWorldSpace,
     btMultiBodyDynamicsWorld* world1,
@@ -289,7 +358,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
         linkChildShapes,
     bool recursive) {
   ESP_VERY_VERBOSE() << "++++++++++++++++++++++++++++++++++++++";
-  ESP_VERY_VERBOSE() << "convertURDF2BulletInternal...";
+  ESP_VERY_VERBOSE() << "convertURDFToBulletInternal...";
   ESP_VERY_VERBOSE() << "   recursive = " << recursive;
 
   Mn::Matrix4 linkTransformInWorldSpace;
@@ -311,8 +380,8 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
   if (urdfParentIndex == -2) {
     ESP_VERY_VERBOSE() << "root link has no parent";
   } else {
-    getMassAndInertia2(urdfParentIndex, parentMass, parentLocalInertiaDiagonal,
-                       parentLocalInertialFrame);
+    getMassAndInertia(urdfParentIndex, parentMass, parentLocalInertiaDiagonal,
+                      parentLocalInertialFrame);
   }
 
   ESP_VERY_VERBOSE() << "about to get mass/inertia";
@@ -320,8 +389,8 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
   btScalar mass = 0;
   Mn::Matrix4 localInertialFrame;
   Mn::Vector3 localInertiaDiagonal(0);
-  getMassAndInertia2(urdfLinkIndex, mass, localInertiaDiagonal,
-                     localInertialFrame);
+  getMassAndInertia(urdfLinkIndex, mass, localInertiaDiagonal,
+                    localInertialFrame);
 
   ESP_VERY_VERBOSE() << "about to get joint info";
 
@@ -335,7 +404,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
   btScalar jointMaxForce = NAN;
   btScalar jointMaxVelocity = NAN;
 
-  bool hasParentJoint = getJointInfo2(
+  bool hasParentJoint = getJointInfo(
       urdfLinkIndex, parent2joint, linkTransformInWorldSpace,
       jointAxisInJointSpace, jointType, jointLowerLimit, jointUpperLimit,
       jointDamping, jointFriction, jointMaxForce, jointMaxVelocity);
@@ -364,10 +433,11 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
         btAssert(localInertiaDiagonal[1] < 1e10);
         btAssert(localInertiaDiagonal[2] < 1e10);
       }
-      io::URDF::LinkContactInfo contactInfo;
+      metadata::URDF::LinkContactInfo contactInfo;
       getLinkContactInfo(urdfLinkIndex, contactInfo);
       // temporary inertia scaling until we load inertia from URDF
-      if ((contactInfo.m_flags & io::URDF::CONTACT_HAS_INERTIA_SCALING) != 0) {
+      if ((contactInfo.m_flags & metadata::URDF::CONTACT_HAS_INERTIA_SCALING) !=
+          0) {
         localInertiaDiagonal *= contactInfo.m_inertiaScaling;
       }
     }
@@ -422,9 +492,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
       }
 
       switch (jointType) {
-        case io::URDF::SphericalJoint: {
-          // TODO: link mapping?
-          // creation.addLinkMapping(urdfLinkIndex, mbLinkIndex);
+        case metadata::URDF::SphericalJoint: {
           cache->m_bulletMultiBody->setupSpherical(
               mbLinkIndex, mass, btVector3(localInertiaDiagonal), mbParentIndex,
               btQuaternion(parentRotToThis), btVector3(offsetInA.translation()),
@@ -432,9 +500,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
 
           break;
         }
-        case io::URDF::PlanarJoint: {
-          // TODO: link mapping?
-          // creation.addLinkMapping(urdfLinkIndex, mbLinkIndex);
+        case metadata::URDF::PlanarJoint: {
           cache->m_bulletMultiBody->setupPlanar(
               mbLinkIndex, mass, btVector3(localInertiaDiagonal), mbParentIndex,
               btQuaternion(parentRotToThis),
@@ -444,29 +510,23 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
               btVector3(offsetInA.translation()), disableParentCollision);
           break;
         }
-        case io::URDF::FloatingJoint:
-
-        case io::URDF::FixedJoint: {
-          if ((jointType == io::URDF::FloatingJoint) ||
-              (jointType == io::URDF::PlanarJoint)) {
-            printf(
-                "Warning: joint unsupported, creating a fixed joint instead.");
+        case metadata::URDF::FloatingJoint:
+        case metadata::URDF::FixedJoint: {
+          if (jointType == metadata::URDF::FloatingJoint)
+          //|| (jointType == metadata::URDF::PlanarJoint))
+          {
+            ESP_WARNING() << "Warning: Floating joint unsupported, creating a "
+                             "fixed joint instead.";
           }
-          // TODO: link mapping?
-          // creation.addLinkMapping(urdfLinkIndex, mbLinkIndex);
-
-          // todo: adjust the center of mass transform and pivot axis properly
+          // TODO: adjust the center of mass transform and pivot axis properly
           cache->m_bulletMultiBody->setupFixed(
               mbLinkIndex, mass, btVector3(localInertiaDiagonal), mbParentIndex,
               btQuaternion(parentRotToThis), btVector3(offsetInA.translation()),
               btVector3(-offsetInB.translation()));
           break;
         }
-        case io::URDF::ContinuousJoint:
-        case io::URDF::RevoluteJoint: {
-          // TODO: link mapping?
-          // creation.addLinkMapping(urdfLinkIndex, mbLinkIndex);
-
+        case metadata::URDF::ContinuousJoint:
+        case metadata::URDF::RevoluteJoint: {
           cache->m_bulletMultiBody->setupRevolute(
               mbLinkIndex, mass, btVector3(localInertiaDiagonal), mbParentIndex,
               btQuaternion(parentRotToThis),
@@ -476,7 +536,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
               btVector3(offsetInA.translation()),
               btVector3(-offsetInB.translation()), disableParentCollision);
 
-          if (jointType == io::URDF::RevoluteJoint &&
+          if (jointType == metadata::URDF::RevoluteJoint &&
               jointLowerLimit <= jointUpperLimit) {
             btMultiBodyConstraint* con = new btMultiBodyJointLimitConstraint(
                 cache->m_bulletMultiBody, mbLinkIndex, jointLowerLimit,
@@ -490,10 +550,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
 
           break;
         }
-        case io::URDF::PrismaticJoint: {
-          // TODO: link mapping?
-          // creation.addLinkMapping(urdfLinkIndex, mbLinkIndex);
-
+        case metadata::URDF::PrismaticJoint: {
           cache->m_bulletMultiBody->setupPrismatic(
               mbLinkIndex, mass, btVector3(localInertiaDiagonal), mbParentIndex,
               btQuaternion(parentRotToThis),
@@ -520,6 +577,8 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
           ESP_VERY_VERBOSE() << "Invalid joint type." btAssert(0);
         }
       }
+      // TODO: link mapping?
+      // creation.addLinkMapping(urdfLinkIndex, mbLinkIndex);
     }
 
     {
@@ -544,7 +603,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
       // base and fixed? -> static, otherwise flag as dynamic
       bool isDynamic =
           !(mbLinkIndex < 0 && cache->m_bulletMultiBody->hasFixedBase());
-      io::URDF::LinkContactInfo contactInfo;
+      metadata::URDF::LinkContactInfo contactInfo;
       getLinkContactInfo(urdfLinkIndex, contactInfo);
 
       processContactParameters(contactInfo, col);
@@ -609,7 +668,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
       int collisionFlags =
           getCollisionGroupAndMask(urdfLinkIndex, colGroup, colMask);
 
-      if ((collisionFlags & io::URDF::HAS_COLLISION_GROUP) != 0) {
+      if ((collisionFlags & metadata::URDF::HAS_COLLISION_GROUP) != 0) {
         collisionFilterGroup = colGroup;
       }
 
@@ -619,7 +678,7 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
 // We prefer to only override the group, while still using getMaskForGroup
 // (above) for mask computation.
 #if 0
-      if (collisionFlags & io::URDF::HAS_COLLISION_MASK) {
+      if (collisionFlags & metadata::URDF::HAS_COLLISION_MASK) {
         collisionFilterMask = colMask;
       }
 #endif
@@ -645,9 +704,9 @@ Mn::Matrix4 BulletURDFImporter::convertURDF2BulletInternal(
     for (int i = 0; i < numChildren; ++i) {
       int urdfChildLinkIndex = urdfChildIndices[i];
 
-      convertURDF2BulletInternal(urdfChildLinkIndex, linkTransformInWorldSpace,
-                                 world1, linkCompoundShapes, linkChildShapes,
-                                 recursive);
+      convertURDFToBulletInternal(urdfChildLinkIndex, linkTransformInWorldSpace,
+                                  world1, linkCompoundShapes, linkChildShapes,
+                                  recursive);
     }
   }
   return linkTransformInWorldSpace;

@@ -1,4 +1,4 @@
-FROM nvidia/cudagl:10.0-devel-centos7
+FROM nvidia/cudagl:10.1-devel-centos8
 
 ENV LC_ALL en_US.UTF-8
 ENV LANG en_US.UTF-8
@@ -6,14 +6,14 @@ ENV LANGUAGE en_US.UTF-8
 ARG AIHABITAT_CONDA_CHN
 ARG AIHABITAT_CONDA_CHN_PWD
 
-RUN yum install -y wget curl perl cmake util-linux xz bzip2 git patch which unzip python3
-RUN yum install -y yum-utils centos-release-scl
-RUN yum-config-manager --enable rhel-server-rhscl-7-rpms
-RUN yum install -y devtoolset-7-gcc devtoolset-7-gcc-c++ devtoolset-7-gcc-gfortran devtoolset-7-binutils
-ENV PATH=/opt/rh/devtoolset-7/root/usr/bin:$PATH
-ENV LD_LIBRARY_PATH=/opt/rh/devtoolset-7/root/usr/lib64:/opt/rh/devtoolset-7/root/usr/lib:$LD_LIBRARY_PATH
+RUN sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo
+RUN sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo
+RUN sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo
+RUN yum -y --nogpgcheck update --nobest
 
-RUN yum install -y autoconf aclocal automake make
+RUN yum install -y yum-utils
+RUN yum install -y wget curl perl cmake util-linux xz bzip2 git patch which unzip python3
+RUN yum install -y autoconf automake make
 RUN yum install -y mesa-libEGL-devel mesa-libGL-devel
 
 # Install patchelf
@@ -32,6 +32,6 @@ ENV PATH /opt/conda/bin:$PATH
 ADD ./common/install_conda.sh install_conda.sh
 RUN bash ./install_conda.sh && rm install_conda.sh
 
-RUN conda init bash && conda create --name py37 python=3.7 -y
-RUN source ~/.bashrc && conda activate py37 && conda install -y anaconda-client git gitpython ninja conda-build
+RUN conda init bash && conda create --name py39 python=3.9 -y
+RUN source ~/.bashrc && conda activate py39 && conda install -y anaconda-client git gitpython ninja conda-build
 RUN conda config --set anaconda_upload yes

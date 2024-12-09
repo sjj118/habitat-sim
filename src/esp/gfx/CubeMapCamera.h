@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -19,7 +19,8 @@ class CubeMapCamera : public RenderCamera {
    * @brief Constructor
    * @param node the scene node to which the camera is attached
    */
-  explicit CubeMapCamera(scene::SceneNode& node);
+  explicit CubeMapCamera(scene::SceneNode& node,
+                         esp::scene::SceneNodeSemanticDataIDX semanticDataIDX);
   /**
    * @brief Constructor
    * @param node the scene node to which the camera is attached
@@ -28,6 +29,7 @@ class CubeMapCamera : public RenderCamera {
    * @param up the up direction (parent node space)
    */
   explicit CubeMapCamera(scene::SceneNode& node,
+                         esp::scene::SceneNodeSemanticDataIDX semanticDataIDX,
                          const vec3f& eye,
                          const vec3f& target,
                          const vec3f& up);
@@ -39,6 +41,7 @@ class CubeMapCamera : public RenderCamera {
    * @param up the up direction (parent node space)
    */
   explicit CubeMapCamera(scene::SceneNode& node,
+                         esp::scene::SceneNodeSemanticDataIDX semanticDataIDX,
                          const Magnum::Vector3& eye,
                          const Magnum::Vector3& target,
                          const Magnum::Vector3& up);

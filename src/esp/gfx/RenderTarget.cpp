@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -6,6 +6,7 @@
 #include <Magnum/GL/BufferImage.h>
 #include <Magnum/GL/DefaultFramebuffer.h>
 #include <Magnum/GL/Framebuffer.h>
+#include <Magnum/GL/Mesh.h>
 #include <Magnum/GL/PixelFormat.h>
 #include <Magnum/GL/Renderbuffer.h>
 #include <Magnum/GL/RenderbufferFormat.h>
@@ -20,9 +21,9 @@
 
 #include "RenderTarget.h"
 #include "esp/sensor/VisualSensor.h"
-#include "magnum.h"
 
-#include "esp/gfx/DepthUnprojection.h"
+#include "esp/gfx_batch/DepthUnprojection.h"
+#include "esp/gfx_batch/Hbao.h"
 
 #ifdef ESP_BUILD_WITH_CUDA
 #include <cuda_gl_interop.h>
@@ -46,7 +47,7 @@ const Mn::GL::Framebuffer::ColorAttachment UnprojectedDepthBufferAttachment =
 struct RenderTarget::Impl {
   Impl(const Mn::Vector2i& size,
        const Mn::Vector2& depthUnprojection,
-       DepthShader* depthShader,
+       gfx_batch::DepthShader* depthShader,
        Flags flags,
        const sensor::VisualSensor* visualSensor)
       : colorBuffer_{},
@@ -61,8 +62,9 @@ struct RenderTarget::Impl {
         flags_{flags},
         visualSensor_{visualSensor} {
     if (depthShader_) {
-      CORRADE_INTERNAL_ASSERT(depthShader_->flags() &
-                              DepthShader::Flag::UnprojectExistingDepth);
+      CORRADE_INTERNAL_ASSERT(
+          depthShader_->flags() &
+          gfx_batch::DepthShader::Flag::UnprojectExistingDepth);
     }
 
     if (flags_ & Flag::RgbaAttachment) {
@@ -116,6 +118,19 @@ struct RenderTarget::Impl {
     CORRADE_INTERNAL_ASSERT(
         framebuffer_.checkStatus(Mn::GL::FramebufferTarget::Draw) ==
         Mn::GL::Framebuffer::Status::Complete);
+
+    if (flags_ & Flag::HorizonBasedAmbientOcclusion) {
+      // depth texture is required for HBAO
+      CORRADE_INTERNAL_ASSERT(flags_ & Flag::DepthTextureAttachment);
+      // TODO Drive construction based on premade configurations
+      hbao_ = gfx_batch::Hbao{
+          gfx_batch::HbaoConfiguration{}
+              .setSize(size)
+              .setUseSpecialBlur(true)
+              .setUseLayeredGeometryShader(true)
+          // TODO other options here?
+      };
+    }
   }
 
   void initDepthUnprojector() {
@@ -148,7 +163,7 @@ struct RenderTarget::Impl {
     CORRADE_INTERNAL_ASSERT(depthShader_ != nullptr);
     CORRADE_ASSERT(
         flags_ & Flag::DepthTextureAttachment,
-        "RenderTarget::Impl::unporojectDepthGPU(): this render target "
+        "RenderTarget::Impl::unprojectDepthGPU(): this render target "
         "was not created with depth texture enabled.", );
     initDepthUnprojector();
 
@@ -180,22 +195,27 @@ struct RenderTarget::Impl {
 
   void renderExit() {}
 
-  void blitRgbaToDefault() {
+  void tryDrawHbao() {
+    if (!hbao_) {
+      return;
+    }
+
+    hbao_->drawEffect(visualSensor_->getProjectionMatrix(),
+                      gfx_batch::HbaoType::CacheAware, depthRenderTexture_,
+                      framebuffer_);
+  }
+
+  void blitRgbaTo(Mn::GL::AbstractFramebuffer& target,
+                  const Mn::Range2Di& targetRectangle) {
     CORRADE_ASSERT(
         flags_ & Flag::RgbaAttachment,
         "RenderTarget::Impl::blitRgbaToDefault(): this render target "
         "was not created with rgba render buffer enabled.", );
-    CORRADE_ASSERT(
-        framebuffer_.viewport() == Mn::GL::defaultFramebuffer.viewport(),
-        "RenderTarget::Impl::blitRgbaToDefault(): the viewport size does not "
-        "match "
-        "between the internal frame buffer and the default frame buffer", );
 
     framebuffer_.mapForRead(RgbaBufferAttachment);
     Mn::GL::AbstractFramebuffer::blit(
-        framebuffer_, Mn::GL::defaultFramebuffer, framebuffer_.viewport(),
-        Mn::GL::defaultFramebuffer.viewport(), Mn::GL::FramebufferBlit::Color,
-        Mn::GL::FramebufferBlitFilter::Nearest);
+        framebuffer_, target, framebuffer_.viewport(), targetRectangle,
+        Mn::GL::FramebufferBlit::Color, Mn::GL::FramebufferBlitFilter::Linear);
   }
 
   void readFrameRgba(const Mn::MutableImageView2D& view) {
@@ -220,8 +240,7 @@ struct RenderTarget::Impl {
           Mn::GL::PixelFormat::DepthComponent, Mn::GL::PixelType::Float,
           view.size(), view.data()};
       framebuffer_.read(framebuffer_.viewport(), depthBufferView);
-      unprojectDepth(depthUnprojection_,
-                     Cr::Containers::arrayCast<Mn::Float>(view.data()));
+      gfx_batch::unprojectDepth(depthUnprojection_, view.pixels<Mn::Float>());
     }
   }
 
@@ -353,7 +372,7 @@ struct RenderTarget::Impl {
   Mn::GL::Framebuffer framebuffer_;
 
   Mn::Vector2 depthUnprojection_;
-  DepthShader* depthShader_;
+  gfx_batch::DepthShader* depthShader_;
   Mn::GL::Renderbuffer unprojectedDepth_;
   Mn::GL::Mesh depthUnprojectionMesh_;
   Mn::GL::Framebuffer depthUnprojectionFrameBuffer_;
@@ -367,11 +386,13 @@ struct RenderTarget::Impl {
   cudaGraphicsResource_t objecIdBufferCugl_ = nullptr;
   cudaGraphicsResource_t depthBufferCugl_ = nullptr;
 #endif
+
+  Cr::Containers::Optional<gfx_batch::Hbao> hbao_{};
 };  // namespace gfx
 
 RenderTarget::RenderTarget(const Mn::Vector2i& size,
                            const Mn::Vector2& depthUnprojection,
-                           DepthShader* depthShader,
+                           gfx_batch::DepthShader* depthShader,
                            Flags flags,
                            const sensor::VisualSensor* visualSensor)
     : pimpl_(spimpl::make_unique_impl<Impl>(size,
@@ -404,8 +425,14 @@ void RenderTarget::readFrameObjectId(const Mn::MutableImageView2D& view) {
   pimpl_->readFrameObjectId(view);
 }
 
+void RenderTarget::blitRgbaTo(Mn::GL::AbstractFramebuffer& target,
+                              const Mn::Range2Di& targetRectangle) {
+  pimpl_->blitRgbaTo(target, targetRectangle);
+}
+
 void RenderTarget::blitRgbaToDefault() {
-  pimpl_->blitRgbaToDefault();
+  pimpl_->blitRgbaTo(Mn::GL::defaultFramebuffer,
+                     Mn::GL::defaultFramebuffer.viewport());
 }
 
 Mn::Vector2i RenderTarget::framebufferSize() const {
@@ -418,6 +445,10 @@ Mn::GL::Texture2D& RenderTarget::getDepthTexture() {
 
 Mn::GL::Texture2D& RenderTarget::getObjectIdTexture() {
   return pimpl_->getObjectIdTexture();
+}
+
+void RenderTarget::tryDrawHbao() {
+  return pimpl_->tryDrawHbao();
 }
 
 #ifdef ESP_BUILD_WITH_CUDA

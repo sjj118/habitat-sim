@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -15,6 +15,7 @@
 #include "esp/assets/GenericSemanticMeshData.h"
 #include "esp/core/Esp.h"
 #include "esp/geo/Geo.h"
+#include "esp/metadata/attributes/AttributesEnumMaps.h"
 
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -44,7 +45,7 @@ MeshData SceneLoader::load(const AssetInfo& info) {
     return mesh;
   }
 
-  if (info.type == AssetType::INSTANCE_MESH) {
+  if (info.type == metadata::attributes::AssetType::InstanceMesh) {
     Cr::Containers::Pointer<Importer> importer;
     CORRADE_INTERNAL_ASSERT_OUTPUT(
         importer = importerManager_.loadAndInstantiate("StanfordImporter"));

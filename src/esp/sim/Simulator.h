@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -8,20 +8,15 @@
 #include <Corrade/Utility/Assert.h>
 
 #include <utility>
-#include "esp/agent/Agent.h"
 #include "esp/assets/ResourceManager.h"
 #include "esp/core/Esp.h"
 #include "esp/core/Random.h"
 #include "esp/gfx/DebugLineRender.h"
 #include "esp/gfx/RenderTarget.h"
 #include "esp/gfx/WindowlessContext.h"
-#include "esp/metadata/MetadataMediator.h"
+#include "esp/gfx/replay/Player.h"
 #include "esp/nav/PathFinder.h"
-#include "esp/physics/ArticulatedObject.h"
 #include "esp/physics/PhysicsManager.h"
-#include "esp/physics/RigidObject.h"
-#include "esp/physics/objectManagers/ArticulatedObjectManager.h"
-#include "esp/physics/objectManagers/RigidObjectManager.h"
 #include "esp/scene/SceneManager.h"
 #include "esp/scene/SceneNode.h"
 #include "esp/sensor/Sensor.h"
@@ -51,7 +46,7 @@ class Simulator {
  public:
   explicit Simulator(
       const SimulatorConfiguration& cfg,
-      metadata::MetadataMediator::ptr _metadataMediator = nullptr);
+      std::shared_ptr<metadata::MetadataMediator> _metadataMediator = nullptr);
   virtual ~Simulator();
 
   /**
@@ -72,21 +67,22 @@ class Simulator {
 
   void reconfigure(const SimulatorConfiguration& cfg);
 
-  void reset();
+  /**
+   * @brief Reset the simulation state including the state of all physics
+   * objects and the default light setup.
+   * Sets the @ref worldTime_ to 0.0, changes the physical state of all objects back to their initial states.
+   * Does not invalidate existing ManagedObject wrappers.
+   * Does not add or remove object instances.
+   * Only changes motion_type when scene_instance specified a motion type.
+   * @param calledAfterSceneCreate Whether this reset is being called after a
+   * new scene has been created in reconfigure. If so we con't want to
+   * redundantly re-place the newly-placed object positions.
+   */
+  void reset(bool calledAfterSceneCreate = false);
 
   void seed(uint32_t newSeed);
 
   std::shared_ptr<gfx::Renderer> getRenderer() { return renderer_; }
-  std::shared_ptr<scene::SemanticScene> getSemanticScene() {
-    return resourceManager_->getSemanticScene();
-  }
-
-  /**
-   * @brief Return a view of the currently set Semantic scene colormap.
-   */
-  const std::vector<Mn::Vector3ub>& getSemanticSceneColormap() const {
-    return resourceManager_->getSemanticSceneColormap();
-  }
 
   inline void getRenderGLContext() {
     // acquire GL context from background thread, if background rendering
@@ -96,45 +92,16 @@ class Simulator {
     }
   }
 
-  /** @brief check if the semantic scene exists.*/
-  bool semanticSceneExists() const {
-    return resourceManager_->semanticSceneExists();
-  }
-
-  /**
-   * @brief get the current active scene graph
-   */
-  scene::SceneGraph& getActiveSceneGraph() {
-    CORRADE_INTERNAL_ASSERT(std::size_t(activeSceneID_) < sceneID_.size());
-    return sceneManager_->getSceneGraph(activeSceneID_);
-  }
-
-  /** @brief Check to see if there is a SemanticSceneGraph for rendering */
-  bool semanticSceneGraphExists() const {
-    return std::size_t(activeSemanticSceneID_) < sceneID_.size();
-  }
-
-  /** @brief get the semantic scene's SceneGraph for rendering */
-  scene::SceneGraph& getActiveSemanticSceneGraph() {
-    CORRADE_INTERNAL_ASSERT(semanticSceneGraphExists());
-    return sceneManager_->getSceneGraph(activeSemanticSceneID_);
-  }
   std::shared_ptr<gfx::replay::ReplayManager> getGfxReplayManager() {
     return gfxReplayMgr_;
   }
 
-  void saveFrame(const std::string& filename);
-
   /**
    * @brief The ID of the CUDA device of the OpenGL context owned by the
-   * simulator.  This will only be nonzero if the simulator is built in
+   * simulator. This will only be nonzero if the simulator is built in
    * --headless mode on linux
    */
   int gpuDevice() const {
-    CORRADE_ASSERT(config_.createRenderer,
-                   "Simulator::gpuDevice() : cannot get gpu device when "
-                   "createRenderer flag is false",
-                   0);
     if (context_ == nullptr) {
       return 0;
     }
@@ -142,65 +109,55 @@ class Simulator {
   }
 
   // === Physics Simulator Functions ===
-  // TODO: support multi-scene physics (default sceneID=0 currently).
-
+  /**
+   * @brief Return manager for construction and access to articulated object
+   * attributes for the current dataset.
+   */
+  const std::shared_ptr<metadata::managers::AOAttributesManager>&
+  getAOAttributesManager() const;
   /**
    * @brief Return manager for construction and access to asset attributes for
    * the current dataset.
    */
-  const metadata::managers::AssetAttributesManager::ptr&
-  getAssetAttributesManager() const {
-    return metadataMediator_->getAssetAttributesManager();
-  }
+  const std::shared_ptr<metadata::managers::AssetAttributesManager>&
+  getAssetAttributesManager() const;
   /**
    * @brief Return manager for construction and access to light attributes and
    * layouts for the current dataset.
    */
-  const metadata::managers::LightLayoutAttributesManager::ptr&
-  getLightLayoutAttributesManager() const {
-    return metadataMediator_->getLightLayoutAttributesManager();
-  }
+  const std::shared_ptr<metadata::managers::LightLayoutAttributesManager>&
+  getLightLayoutAttributesManager() const;
 
   /**
    * @brief Return manager for construction and access to object attributes and
    * layouts for the current dataset.
    */
-  const metadata::managers::ObjectAttributesManager::ptr&
-  getObjectAttributesManager() const {
-    return metadataMediator_->getObjectAttributesManager();
-  }
+  const std::shared_ptr<metadata::managers::ObjectAttributesManager>&
+  getObjectAttributesManager() const;
   /**
    * @brief Return manager for construction and access to physics world
    * attributes.
    */
-  const metadata::managers::PhysicsAttributesManager::ptr&
-  getPhysicsAttributesManager() const {
-    return metadataMediator_->getPhysicsAttributesManager();
-  }
+  const std::shared_ptr<metadata::managers::PhysicsAttributesManager>&
+  getPhysicsAttributesManager() const;
   /**
    * @brief Return manager for construction and access to scene attributes for
    * the current dataset.
    */
-  const metadata::managers::StageAttributesManager::ptr&
-  getStageAttributesManager() const {
-    return metadataMediator_->getStageAttributesManager();
-  }
+  const std::shared_ptr<metadata::managers::StageAttributesManager>&
+  getStageAttributesManager() const;
 
   /**
    * @brief Get current active dataset name from @ref metadataMediator_.
    */
-  std::string getActiveSceneDatasetName() {
-    return metadataMediator_->getActiveSceneDatasetName();
-  }
+  std::string getActiveSceneDatasetName();
 
   /**
    * @brief Set current active dataset name from @ref metadataMediator_.
    * @param _dsHandle The desired dataset to switch to. If has not been loaded,
    * an attempt will be made to load it.
    */
-  void setActiveSceneDatasetName(const std::string& _dsHandle) {
-    metadataMediator_->setActiveSceneDatasetName(_dsHandle);
-  }
+  void setActiveSceneDatasetName(const std::string& _dsHandle);
 
   /** @brief Return the library implementation type for the simulator currently
    * in use. Use to check for a particular implementation.
@@ -226,16 +183,53 @@ class Simulator {
    *
    * Use this to query the stage's properties when it was initialized.
    */
-  metadata::attributes::StageAttributes::cptr getStageInitializationTemplate(
-      int sceneID = 0) const {
-    if (sceneHasPhysics(sceneID)) {
+  metadata::attributes::StageAttributes::cptr getStageInitializationTemplate()
+      const {
+    if (sceneHasPhysics()) {
       return physicsManager_->getStageInitAttributes();
     }
     return nullptr;
   }
 
   /**
-   * @brief Build a map keyed by semantic color/id referencing a vector
+   * @brief get the current active scene graph
+   */
+  scene::SceneGraph& getActiveSceneGraph() {
+    CORRADE_INTERNAL_ASSERT(std::size_t(activeSceneID_) < sceneID_.size());
+    return sceneManager_->getSceneGraph(activeSceneID_);
+  }
+
+  ///////////////////////////
+  // Semantic Scene and Data
+  std::shared_ptr<scene::SemanticScene> getSemanticScene() {
+    return resourceManager_->getSemanticScene();
+  }
+
+  /**
+   * @brief Return a view of the currently set Semantic scene colormap.
+   */
+  const std::vector<Mn::Vector3ub>& getSemanticSceneColormap() const {
+    return resourceManager_->getSemanticSceneColormap();
+  }
+
+  /** @brief check if the semantic scene exists.*/
+  bool semanticSceneExists() const {
+    return resourceManager_->semanticSceneExists();
+  }
+
+  /** @brief Check to see if there is a SemanticSceneGraph for rendering */
+  bool semanticSceneGraphExists() const {
+    return std::size_t(activeSemanticSceneID_) < sceneID_.size();
+  }
+
+  /** @brief get the semantic scene's SceneGraph for rendering */
+  scene::SceneGraph& getActiveSemanticSceneGraph() {
+    CORRADE_INTERNAL_ASSERT(semanticSceneGraphExists());
+    return sceneManager_->getSceneGraph(activeSemanticSceneID_);
+  }
+
+  /**
+   * @brief Build a map keyed by semantic color/id referencing a list of
    * connected component-based Semantic objects.
    */
   std::unordered_map<uint32_t, std::vector<scene::CCSemanticObject::ptr>>
@@ -265,184 +259,48 @@ class Simulator {
     return {};
   }
 
+  ///////////////////////////
+  // End Semantic Scene and Data
+
   /**
-   * @brief Builds a @ref esp::metadata::SceneInstanceAttributes describing the
+   * @brief Builds a @ref esp::metadata::attributes::SceneInstanceAttributes describing the
    * current scene configuration, and saves it to a JSON file, using @p
    * saveFileName .
    * @param saveFilename The name to use to save the current scene instance.
    * @return whether successful or not.
    */
-  bool saveCurrentSceneInstance(const std::string& saveFilename,
-                                int sceneID = 0) const {
-    if (sceneHasPhysics(sceneID)) {
-      ESP_DEBUG() << "Attempting to save current scene layout as "
-                     "SceneInstanceAttributes with filename :"
-                  << saveFilename;
-      return metadataMediator_->getSceneInstanceAttributesManager()
-          ->saveManagedObjectToFile(buildCurrentStateSceneAttributes(),
-                                    saveFilename);
-    }
-    return false;
-  }  // saveCurrentSceneInstance
+  bool saveCurrentSceneInstance(const std::string& saveFilename) const;
 
   /**
-   * @brief Builds a @ref esp::metadata::SceneInstanceAttributes describing
+   * @brief Builds a @ref esp::metadata::attributes::SceneInstanceAttributes describing
    * the current scene configuration, and saves it to a JSON file, using the
    * current scene attributes' filename, or an incremented version if @p
    * overwrite == false.
-   * @param overwrite Whether to overrite an existing file with the same name,
+   * @param overwrite Whether to overwrite an existing file with the same name,
    * should one exist.
    * @return whether successful or not.
    */
-  bool saveCurrentSceneInstance(bool overwrite = false, int sceneID = 0) const {
-    if (sceneHasPhysics(sceneID)) {
-      ESP_DEBUG() << "Attempting to save current scene layout as "
-                     "SceneInstanceAttributes.";
-      return metadataMediator_->getSceneInstanceAttributesManager()
-          ->saveManagedObjectToFile(buildCurrentStateSceneAttributes(),
-                                    overwrite);
-    }
-    return false;
-  }  // saveCurrentSceneInstance
+  bool saveCurrentSceneInstance(bool overwrite = false) const;
 
   /**
    * @brief Get the IDs of the physics objects instanced in a physical scene.
    * See @ref esp::physics::PhysicsManager::getExistingObjectIDs.
-   * @param sceneID !! Not used currently !! Specifies which physical scene to
-   * query.
    * @return A vector of ID keys into @ref
    * esp::physics::PhysicsManager::existingObjects_.
    */
-  std::vector<int> getExistingObjectIDs(int sceneID = 0) {
-    if (sceneHasPhysics(sceneID)) {
+  std::vector<int> getExistingObjectIDs() {
+    if (sceneHasPhysics()) {
       return physicsManager_->getExistingObjectIDs();
     }
     return std::vector<int>();  // empty if no simulator exists
   }
 
   /**
-   * @brief Turn on/off rendering for the bounding box of the object's visual
-   * component.
-   *
-   * Assumes the new @ref esp::gfx::Drawable for the bounding box should be
-   * added to the active @ref esp::gfx::SceneGraph's default drawable group. See
-   * @ref esp::gfx::SceneGraph::getDrawableGroup().
-   *
-   * @param drawBB Whether or not the render the bounding box.
-   * @param objectId The object ID and key identifying the object in @ref
-   * esp::physics::PhysicsManager::existingObjects_.
-   * @param sceneID !! Not used currently !! Specifies which physical scene of
-   * the object.
+   * @brief Get the axis-aligned bounding box (AABB) of the scene in global
+   * space.
    */
-  void setObjectBBDraw(bool drawBB, int objectId, int sceneID = 0) {
-    if (sceneHasPhysics(sceneID)) {
-      getRenderGLContext();
-      auto& drawables = getDrawableGroup(sceneID);
-      physicsManager_->setObjectBBDraw(objectId, &drawables, drawBB);
-    }
-  }
-
-  //===============================================================================//
-  // Voxel Field API
-
-#ifdef ESP_BUILD_WITH_VHACD
-  /**
-   * @brief Creates a voxelization for a particular object. Initializes the
-   * voxelization with a boundary voxel grid using VHACD's voxelization library.
-   *
-   * @param objectId The object ID and key identifying the object in @ref
-   * esp::physics::PhysicsManager::existingObjects_.
-   * @param resolution The approximate number of voxels for the voxel grid that
-   * is created.
-   */
-  void createObjectVoxelization(int objectId, int resolution = 1000000) {
-    physicsManager_->generateVoxelization(objectId, resolution);
-  }
-#endif
-
-  /**
-   * @brief Turn on/off rendering for the voxel grid of the object's visual
-   * component.
-   *
-   * If a voxel grid for the object has not been created, it will make one with
-   * default arguments using @ref createObjectVoxelization().
-   *
-   * @param drawV Whether or not the render the voxel grid.
-   * @param objectId The object ID and key identifying the object in @ref
-   * esp::physics::PhysicsManager::existingObjects_.
-   * @param gridName The name of the voxel grid to be visualized.
-   */
-  void setObjectVoxelizationDraw(bool drawV,
-                                 int objectId,
-                                 const std::string& gridName = "Boundary") {
-    auto& drawables = getDrawableGroup();
-    physicsManager_->setObjectVoxelizationDraw(objectId, gridName, &drawables,
-                                               drawV);
-  }
-
-  /**
-   * @brief Returns the VoxelWrapper for a particular object.
-   *
-   * @param objectId The object ID and key identifying the object in @ref
-   * esp::physics::PhysicsManager::existingObjects_.
-   * @return A shared ptr to the object's VoxelWrapper .
-   */
-  std::shared_ptr<esp::geo::VoxelWrapper> getObjectVoxelization(int objectId) {
-    return physicsManager_->getObjectVoxelization(objectId);
-  }
-
-#ifdef ESP_BUILD_WITH_VHACD
-  /**
-   * @brief Creates a voxelization for the scene. Initializes the voxelization
-   * with a boundary voxel grid using VHACD's voxelization library.
-   *
-   * @param resolution The approximate number of voxels for the voxel grid that
-   * is created.
-   */
-  void createStageVoxelization(int resolution = 1000000) {
-    physicsManager_->generateStageVoxelization(resolution);
-  }
-#endif
-
-  /**
-   * @brief Turn on/off rendering for the voxel grid of the scene's visual
-   * component.
-   *
-   * If a voxel grid for the scene has not been created, it will make one with
-   * default arguments using @ref createStageVoxelization().
-   *
-   * @param drawV Whether or not the render the voxel grid.
-   * @param gridName The name of the voxel grid to be visualized.
-   */
-  void setStageVoxelizationDraw(bool drawV,
-                                const std::string& gridName = "Boundary") {
-    auto& drawables = getDrawableGroup();
-    physicsManager_->setStageVoxelizationDraw(gridName, &drawables, drawV);
-  }
-
-  /**
-   * @brief Returns the VoxelWrapper for a particular object.
-   * @return A shared ptr to the object's VoxelWrapper .
-   */
-  std::shared_ptr<esp::geo::VoxelWrapper> getStageVoxelization() {
-    return physicsManager_->getStageVoxelization();
-  }
-
-  /**
-   * @brief Discrete collision check for contact between an object and the
-   * collision world.
-   * @param objectId The object ID and key identifying the object in @ref
-   * esp::physics::PhysicsManager::existingObjects_.
-   * @param sceneID !! Not used currently !! Specifies which physical scene of
-   * the object.
-   * @return Whether or not the object is in contact with any other collision
-   * enabled objects.
-   */
-  bool contactTest(int objectID, int sceneID = 0) {
-    if (sceneHasPhysics(sceneID)) {
-      return physicsManager_->contactTest(objectID);
-    }
-    return false;
+  const Mn::Range3D& getSceneAabb() {
+    return getActiveSceneGraph().getRootNode().getCumulativeBB();
   }
 
   /**
@@ -490,7 +348,7 @@ class Simulator {
    * @brief Set the stage to collidable or not.
    */
   void setStageIsCollidable(bool collidable) {
-    if (sceneHasPhysics(activeSceneID_)) {
+    if (sceneHasPhysics()) {
       physicsManager_->setStageIsCollidable(collidable);
     }
   }
@@ -499,7 +357,7 @@ class Simulator {
    * @brief Get whether or not the stage is collision active.
    */
   bool getStageIsCollidable() {
-    if (sceneHasPhysics(activeSceneID_)) {
+    if (sceneHasPhysics()) {
       return physicsManager_->getStageIsCollidable();
     }
     return false;
@@ -511,7 +369,7 @@ class Simulator {
    */
   std::shared_ptr<esp::physics::RigidObjectManager> getRigidObjectManager()
       const {
-    if (sceneHasPhysics(activeSceneID_)) {
+    if (sceneHasPhysics()) {
       return physicsManager_->getRigidObjectManager();
     }
     return nullptr;
@@ -524,7 +382,7 @@ class Simulator {
    */
   std::shared_ptr<esp::physics::ArticulatedObjectManager>
   getArticulatedObjectManager() const {
-    if (sceneHasPhysics(activeSceneID_)) {
+    if (sceneHasPhysics()) {
       return physicsManager_->getArticulatedObjectManager();
     }
     return nullptr;
@@ -540,15 +398,16 @@ class Simulator {
    * distances will be in units of ray length.
    * @param maxDistance The maximum distance along the ray direction to search.
    * In units of ray length.
-   * @param sceneID !! Not used currently !! Specifies which physical scene of
-   * the object.
+   * @param bufferDistance The casts the ray from this distance behind the
+   * origin in the inverted ray direction to avoid errors related to casting
+   * rays inside a collision shape's margin.
    * @return Raycast results sorted by distance.
    */
   esp::physics::RaycastResults castRay(const esp::geo::Ray& ray,
                                        double maxDistance = 100.0,
-                                       int sceneID = 0) {
-    if (sceneHasPhysics(sceneID)) {
-      return physicsManager_->castRay(ray, maxDistance);
+                                       double bufferDistance = 0.08) {
+    if (sceneHasPhysics()) {
+      return physicsManager_->castRay(ray, maxDistance, bufferDistance);
     }
     return esp::physics::RaycastResults();
   }
@@ -595,10 +454,25 @@ class Simulator {
   }
 
   /**
+   * @brief Return whether the @ref
+   * esp::metadata::attributes::SceneInstanceAttributes used to create the scene
+   * currently being simulated/displayed specifies a default COM handling for
+   * rigid objects
+   */
+
+  bool getCurSceneDefaultCOMHandling() const {
+    if (curSceneInstanceAttributes_ == nullptr) {
+      return false;
+    }
+    return (curSceneInstanceAttributes_->getTranslationOrigin() ==
+            metadata::attributes::SceneInstanceTranslationOrigin::AssetLocal);
+  }
+
+  /**
    * @brief Set the gravity in a physical scene.
    */
-  void setGravity(const Magnum::Vector3& gravity, int sceneID = 0) {
-    if (sceneHasPhysics(sceneID)) {
+  void setGravity(const Magnum::Vector3& gravity) {
+    if (sceneHasPhysics()) {
       physicsManager_->setGravity(gravity);
     }
   }
@@ -606,8 +480,8 @@ class Simulator {
   /**
    * @brief Get the gravity in a physical scene.
    */
-  Magnum::Vector3 getGravity(int sceneID = 0) const {
-    if (sceneHasPhysics(sceneID)) {
+  Magnum::Vector3 getGravity() const {
+    if (sceneHasPhysics()) {
       return physicsManager_->getGravity();
     }
     return Magnum::Vector3();
@@ -631,8 +505,7 @@ class Simulator {
    * @return Whether or not the navmesh recomputation succeeded.
    */
   bool recomputeNavMesh(nav::PathFinder& pathfinder,
-                        const nav::NavMeshSettings& navMeshSettings,
-                        bool includeStaticObjects = false);
+                        const nav::NavMeshSettings& navMeshSettings);
 
   /**
    * @brief Get the joined mesh data for all objects in the scene
@@ -667,21 +540,10 @@ class Simulator {
 
   /**
    * @brief Return a ref to a new drawables in the currently active scene, for
-   * object creation.  Eventually support multi-scene ID
-   * @param sceneID The scene to get the drawables for.  Currently not used.
-   */
-  inline esp::gfx::DrawableGroup& getDrawableGroup(
-      CORRADE_UNUSED const int sceneID) {
-    // TODO eventually use passed sceneID
-    return sceneManager_->getSceneGraph(activeSceneID_).getDrawables();
-  }
-
-  /**
-   * @brief Return a ref to a new drawables in the currently active scene, for
    * object creation.
    */
   inline esp::gfx::DrawableGroup& getDrawableGroup() {
-    return getDrawableGroup(activeSceneID_);
+    return sceneManager_->getSceneGraph(activeSceneID_).getDrawables();
   }
 
   /**
@@ -705,7 +567,7 @@ class Simulator {
                           float radius = .001,
                           bool smooth = false,
                           int numInterp = 10) {
-    if (sceneHasPhysics(activeSceneID_)) {
+    if (sceneHasPhysics()) {
       return physicsManager_->addTrajectoryObject(
           trajVisName, pts, colorVec, numSegments, radius, smooth, numInterp);
     }
@@ -717,7 +579,7 @@ class Simulator {
    * @return whether successful or not.
    */
   bool removeTrajVisByName(const std::string& trajVisName) {
-    if (sceneHasPhysics(activeSceneID_)) {
+    if (sceneHasPhysics()) {
       return physicsManager_->removeTrajVisByName(trajVisName);
     }
     return false;
@@ -730,20 +592,15 @@ class Simulator {
    * @return whether successful or not.
    */
   bool removeTrajVisByID(int trajVisObjID) {
-    if (sceneHasPhysics(activeSceneID_)) {
+    if (sceneHasPhysics()) {
       return physicsManager_->removeTrajVisByID(trajVisObjID);
     }
     return false;
   }
 
-  agent::Agent::ptr getAgent(int agentId);
-
-  agent::Agent::ptr addAgent(const agent::AgentConfiguration& agentConfig,
-                             scene::SceneNode& agentParentNode);
-  agent::Agent::ptr addAgent(const agent::AgentConfiguration& agentConfig);
-
   /**
-   * @brief Initialize sensor and attach to sceneNode of a particular object
+   * @brief Initialize a sensor from its spec and attach it to the SceneNode of
+   * a particular object or link.
    * @param objectId    Id of the object to which a sensor will be initialized
    * at its node
    * @param sensorSpec  SensorSpec of sensor to be initialized
@@ -756,44 +613,37 @@ class Simulator {
 
   /**
    * @brief Displays observations on default frame buffer for a
-   * particular sensor of an agent
-   * @param agentId    Id of the agent for which the observation is to
-   *                   be returned
-   * @param sensorId   Id of the sensor for which the observation is to
+   * particular sensor
+   * @param sensorUuid   Unique Id of the sensor for which the observation is to
    *                   be returned
    */
-  bool displayObservation(int agentId, const std::string& sensorId);
+  bool displayObservation(const std::string& sensorUuid);
 
   /**
    * @brief
-   * get the render target of a particular sensor of an agent
+   * get the render target of a particular sensor
    * @return pointer to the render target if it is a valid visual sensor,
    * otherwise nullptr
-   * @param agentId    Id of the agent for which the observation is to
-   *                   be returned
-   * @param sensorId   Id of the sensor for which the observation is to
+   * @param sensorUuid   Id of the sensor for which the observation is to
    *                   be returned
    */
-  gfx::RenderTarget* getRenderTarget(int agentId, const std::string& sensorId);
+  gfx::RenderTarget* getRenderTarget(const std::string& sensorUuid);
 
   /**
    * @brief draw observations to the frame buffer stored in that
-   * particular sensor of an agent. Unlike the @displayObservation, it will
+   * particular sensor. Unlike the @displayObservation, it will
    * not display the observation on the default frame buffer
-   * @param agentId    Id of the agent for which the observation is to
-   *                   be returned
-   * @param sensorId   Id of the sensor for which the observation is to
+
+   * @param sensorUuid   Id of the sensor for which the observation is to
    *                   be returned
    */
-  bool drawObservation(int agentId, const std::string& sensorId);
+  bool drawObservation(const std::string& sensorUuid);
 
   /**
    * @brief visualize the undisplayable observations such as depth, semantic, to
    * the frame buffer stored in the @ref SensorInfoVisualizer
    * Note: it will not display the observation on the default frame buffer
-   * @param[in] agentId    Id of the agent for which the observation is to
-   *                   be returned
-   * @param[in] sensorId   Id of the sensor for which the observation is to
+   * @param[in] sensorUuid   Id of the sensor for which the observation is to
    *                   be returned
    * @param[in] colorMapOffset the offset of the color map
    * @param[in] colorMapScale the scale of the color map
@@ -808,26 +658,17 @@ class Simulator {
    * Renderer::RenderTargetBindingFlag for more info
    * @return false if the sensor's observation cannot be visualized.
    */
-  bool visualizeObservation(int agentId,
-                            const std::string& sensorId,
+  bool visualizeObservation(const std::string& sensorUuid,
                             float colorMapOffset,
                             float colorMapScale);
 
-  bool visualizeObservation(int agentId, const std::string& sensorId);
+  bool visualizeObservation(const std::string& sensorUuid);
 
-  bool getAgentObservation(int agentId,
-                           const std::string& sensorId,
-                           sensor::Observation& observation);
-  int getAgentObservations(
-      int agentId,
-      std::map<std::string, sensor::Observation>& observations);
+  bool getSensorObservation(const std::string& sensorUuid,
+                            sensor::Observation& observation);
 
-  bool getAgentObservationSpace(int agentId,
-                                const std::string& sensorId,
-                                sensor::ObservationSpace& space);
-  int getAgentObservationSpaces(
-      int agentId,
-      std::map<std::string, sensor::ObservationSpace>& spaces);
+  bool getSensorObservationSpace(const std::string& sensorUuid,
+                                 sensor::ObservationSpace& space);
 
   nav::PathFinder::ptr getPathFinder() { return pathfinder_; }
   void setPathFinder(nav::PathFinder::ptr pf);
@@ -860,6 +701,13 @@ class Simulator {
    */
   gfx::LightSetup getCurrentLightSetup() {
     return *resourceManager_->getLightSetup(config_.sceneLightSetupKey);
+  }
+
+  /**
+   * @brief retrieve Current lightsetup key
+   */
+  std::string getCurrentLightSetupKey() const {
+    return config_.sceneLightSetupKey;
   }
 
   /**
@@ -943,18 +791,15 @@ class Simulator {
   /**
    * @brief Get this simulator's MetadataMediator
    */
-  metadata::MetadataMediator::ptr getMetadataMediator() const {
+  std::shared_ptr<metadata::MetadataMediator> getMetadataMediator() const {
     return metadataMediator_;
   }
 
   /**
    * @brief Set this simulator's MetadataMediator
    */
-  void setMetadataMediator(metadata::MetadataMediator::ptr _metadataMediator) {
-    metadataMediator_ = std::move(_metadataMediator);
-    // set newly added MM to have current Simulator Config
-    metadataMediator_->setSimulatorConfiguration(this->config_);
-  }
+  void setMetadataMediator(
+      std::shared_ptr<metadata::MetadataMediator> _metadataMediator);
 
   /**
    * @brief Load and add a render asset instance to the current scene graph(s).
@@ -965,49 +810,29 @@ class Simulator {
       const assets::AssetInfo& assetInfo,
       const assets::RenderAssetInstanceCreationInfo& creation);
 
-#ifdef ESP_BUILD_WITH_VHACD
   /**
-   * @brief Runs convex hull decomposition on a specified file. Creates an
-   * object attributes referencing a newly created convex hull asset, and
-   * returns the attribute's handle.
+   * @brief Runtime perf stats are various scalars helpful for troubleshooting
+   * runtime perf.
    *
-   * @param filename The MeshMetaData filename to be converted.
-   * @param params VHACD params that specify resolution, vertices per convex
-   * hull, etc.
-   * @param renderChd Specifies whether or not to render the coinvex hull asset,
-   * or to render the original render asset.
-   * @param saveChdToObj Specifies whether or not to save the newly created
-   * convex hull asset to an obj file.
-   * @return The handle of the newly created object attributes.
+   * @return A vector of stat names; currently, this is constant so it can be
+   * called once at startup. See also getRuntimePerfStatValues.
    */
-  std::string convexHullDecomposition(
-      const std::string& filename,
-      const assets::ResourceManager::VHACDParameters& params =
-          assets::ResourceManager::VHACDParameters(),
-      bool renderChd = false,
-      bool saveChdToObj = false);
-#endif
+  std::vector<std::string> getRuntimePerfStatNames();
 
   /**
-   * @brief For the current active scene, update the shaow map drawable group
+   * @brief Runtime perf stats are various scalars helpful for troubleshooting
+   * runtime perf.
+   *
+   * @return a vector of stat values. Stat values generally change after every
+   * physics step. See also getRuntimePerfStatNames.
    */
-  void updateShadowMapDrawableGroup();
-  /**
-   * @brief compute the shadow maps for the active scene graph, and store the
-   * results in the resource manager
-   */
-  void computeShadowMaps(float lightNearPlane, float lightFarPlane);
-  /**
-   * @brief propergate shadow maps to the drawables
-   * NOTE: so far only pbr drawable and shader support the shadow maps
-   */
-  void setShadowMapsToDrawables();
+  std::vector<float> getRuntimePerfStatValues();
 
  protected:
   Simulator() = default;
 
   /**
-   * @brief if Navemesh visualization is active, reset the visualization.
+   * @brief if Navmesh visualization is active, reset the visualization.
    */
   void resetNavMeshVisIfActive() {
     if (isNavMeshVisualizationActive()) {
@@ -1031,19 +856,23 @@ class Simulator {
   /**
    * @brief Instance the stage for the current scene based on
    * curSceneInstanceAttributes_, the currently active scene's @ref
-   * esp::metadata::SceneInstanceAttributes
+   * esp::metadata::attributes::SceneInstanceAttributes
    * @param curSceneInstanceAttributes The attributes describing the current
    * scene instance.
+   * @param curSemanticAttr The SemanticAttributes referenced by the current
+   * scene instance, or nullptr if none.
    * @return whether stage creation is completed successfully
    */
   bool instanceStageForSceneAttributes(
       const metadata::attributes::SceneInstanceAttributes::cptr&
-          curSceneInstanceAttributes);
+          curSceneInstanceAttributes,
+      const std::shared_ptr<esp::metadata::attributes::SemanticAttributes>&
+          semanticAttr);
 
   /**
    * @brief Instance all the objects in the scene based on
    * curSceneInstanceAttributes_, the currently active scene's @ref
-   * esp::metadata::SceneInstanceAttributes.
+   * esp::metadata::attributes::SceneInstanceAttributes.
    * @param curSceneInstanceAttributes The attributes describing the current
    * scene instance.
    * @return whether object creation and placement is completed successfully
@@ -1054,8 +883,8 @@ class Simulator {
 
   /**
    * @brief Instance all the articulated objects in the scene based
-   * oncurSceneInstanceAttributes_, the currently active scene's @ref
-   * esp::metadata::SceneInstanceAttributes.
+   * on curSceneInstanceAttributes_, the currently active scene's @ref
+   * esp::metadata::attributes::SceneInstanceAttributes.
    * @param curSceneInstanceAttributes The attributes describing the current
    * scene instance.
    * @return whether articulated object creation and placement is completed
@@ -1072,56 +901,7 @@ class Simulator {
   metadata::attributes::SceneInstanceAttributes::ptr
   buildCurrentStateSceneAttributes() const;
 
-  /**
-   * @brief sample a random valid AgentState in passed agentState
-   * @param agentState [out] The placeholder for the sampled agent state.
-   */
-  void sampleRandomAgentState(agent::AgentState& agentState);
-
-  bool isValidScene(int sceneID) const {
-    return sceneID >= 0 && static_cast<std::size_t>(sceneID) < sceneID_.size();
-  }
-
-  bool sceneHasPhysics(int sceneID) const {
-    return isValidScene(sceneID) && physicsManager_ != nullptr;
-  }
-
-  /**
-   * @brief TEMPORARY until sim access to objects is completely removed.  This
-   * method will return an object's wrapper if the passsed @p sceneID and @p
-   * objID are both valid.  This wrapper will then be used by the calling
-   * function to access components of the object.
-   * @param sceneID The ID of the scene to query
-   * @param objID The ID of the desired object
-   * @return A smart pointer to the wrapper referencing the desired object, or
-   * nullptr if DNE.
-   */
-  esp::physics::ManagedRigidObject::ptr queryRigidObjWrapper(int sceneID,
-                                                             int objID) const {
-    if (!sceneHasPhysics(sceneID)) {
-      return nullptr;
-    }
-    return getRigidObjectManager()->getObjectCopyByID(objID);
-  }
-
-  /**
-   * @brief TEMPORARY until sim access to objects is completely removed.  This
-   * method will return an object's wrapper if the passsed @p sceneID and @p
-   * objID are both valid.  This wrapper will then be used by the calling
-   * function to access components of the object.
-   * @param sceneID The ID of the scene to query
-   * @param objID The ID of the desired object
-   * @return A smart pointer to the wrapper referencing the desired object, or
-   * nullptr if DNE.
-   */
-  esp::physics::ManagedArticulatedObject::ptr queryArticulatedObjWrapper(
-      int sceneID,
-      int objID) const {
-    if (!sceneHasPhysics(sceneID)) {
-      return nullptr;
-    }
-    return getArticulatedObjectManager()->getObjectCopyByID(objID);
-  }
+  bool sceneHasPhysics() const { return physicsManager_ != nullptr; }
 
   void reconfigureReplayManager(bool enableGfxReplaySave);
 
@@ -1138,7 +918,7 @@ class Simulator {
   /**
    * @brief Owns and manages the metadata/attributes managers
    */
-  metadata::MetadataMediator::ptr metadataMediator_ = nullptr;
+  std::shared_ptr<metadata::MetadataMediator> metadataMediator_ = nullptr;
 
   /**
    * @brief Configuration describing currently active scene
@@ -1165,8 +945,6 @@ class Simulator {
   core::Random::ptr random_;
   SimulatorConfiguration config_;
 
-  std::vector<agent::Agent::ptr> agents_;
-
   nav::PathFinder::ptr pathfinder_;
   // state indicating frustum culling is enabled or not
   //
@@ -1176,7 +954,7 @@ class Simulator {
   // information ideally, to avoid inconsistency at any time, and reduce
   // maintenance cost this state should be defined in just one place.e.g., only
   // in the frontend Currently, we need it defined here, because sensor., e.g.,
-  // PinholeCamera rquires it when drawing the observation
+  // PinholeCamera requires it when drawing the observation
   bool frustumCulling_ = true;
 
   //! NavMesh visualization variables
@@ -1191,6 +969,8 @@ class Simulator {
   Corrade::Containers::Optional<bool> requiresTextures_;
 
   std::shared_ptr<esp::gfx::DebugLineRender> debugLineRender_;
+
+  std::vector<float> runtimePerfStatValues_;
 
   ESP_SMART_POINTERS(Simulator)
 };

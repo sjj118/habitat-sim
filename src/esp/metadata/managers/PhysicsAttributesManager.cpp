@@ -1,9 +1,9 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
 #include "PhysicsAttributesManager.h"
-#include "AttributesManagerBase.h"
+#include "AbstractAttributesManager.h"
 
 #include "esp/io/Json.h"
 
@@ -23,18 +23,18 @@ PhysicsManagerAttributes::ptr PhysicsAttributesManager::createObject(
       physicsFilename, msg, registerTemplate);
 
   if (nullptr != attrs) {
-    ESP_DEBUG() << msg << "physics manager attributes created"
-                << (registerTemplate ? "and registered." : ".");
+    ESP_DEBUG(Mn::Debug::Flag::NoSpace)
+        << msg << " physics manager attributes created"
+        << (registerTemplate ? " and registered." : ".");
   }
   return attrs;
 }  // PhysicsAttributesManager::createObject
 
 void PhysicsAttributesManager::setValsFromJSONDoc(
     PhysicsManagerAttributes::ptr physicsManagerAttributes,
-    const io::JsonGenericValue&
-        jsonConfig) {  // load the simulator preference - default is "none"
-                       // simulator, set in
-  // attributes ctor.
+    const io::JsonGenericValue& jsonConfig) {
+  // load the simulator preference - default is "none"
+  // simulator, set in attributes ctor.
   io::jsonIntoConstSetter<std::string>(
       jsonConfig, "physics_simulator",
       [physicsManagerAttributes](const std::string& simulator) {

@@ -1,11 +1,11 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
 #ifndef ESP_METADATA_MANAGERS_LIGHTATTRIBUTEMANAGER_H_
 #define ESP_METADATA_MANAGERS_LIGHTATTRIBUTEMANAGER_H_
 
-#include "AttributesManagerBase.h"
+#include "AbstractAttributesManager.h"
 
 #include "esp/gfx/LightSetup.h"
 #include "esp/metadata/attributes/LightLayoutAttributes.h"
@@ -16,20 +16,18 @@ namespace esp {
 namespace metadata {
 namespace managers {
 
-using core::managedContainers::ManagedFileBasedContainer;
-using core::managedContainers::ManagedObjectAccess;
-
 class LightLayoutAttributesManager
-    : public AttributesManager<attributes::LightLayoutAttributes,
-                               ManagedObjectAccess::Copy> {
+    : public AbstractAttributesManager<attributes::LightLayoutAttributes,
+                                       ManagedObjectAccess::Copy> {
  public:
   LightLayoutAttributesManager()
-      : AttributesManager<attributes::LightLayoutAttributes,
-                          ManagedObjectAccess::Copy>::
-            AttributesManager("Lighting Layout", "lighting_config.json") {
+      : AbstractAttributesManager<attributes::LightLayoutAttributes,
+                                  ManagedObjectAccess::Copy>::
+            AbstractAttributesManager("Lighting Layout",
+                                      "lighting_config.json") {
     // build this manager's copy constructor map
     this->copyConstructorMap_["LightLayoutAttributes"] =
-        &LightLayoutAttributesManager::createObjectCopy<
+        &LightLayoutAttributesManager::createObjCopyCtorMapEntry<
             attributes::LightLayoutAttributes>;
   }
 
@@ -83,6 +81,19 @@ class LightLayoutAttributesManager
   gfx::LightSetup createLightSetupFromAttributes(
       const std::string& lightConfigName);
 
+  /**
+   * @brief Not required for this manager.
+   *
+   * This function will be called to finalize attributes' paths before
+   * registration, moving fully qualified paths to the appropriate hidden
+   * attribute fields. This can also be called without registration to make sure
+   * the paths specified in an attributes are properly configured.
+   * @param attributes The attributes to be filtered.
+   */
+  void finalizeAttrPathsBeforeRegister(
+      CORRADE_UNUSED const attributes::LightLayoutAttributes::ptr& attributes)
+      const override {}
+
  protected:
   /**
    * @brief Used Internally.  Create and configure newly-created attributes
@@ -101,7 +112,8 @@ class LightLayoutAttributesManager
 
   /**
    * @brief This method will perform any necessary updating that is
-   * attributesManager-specific upon template removal.  This should only be
+   * AbstractAttributesManager-specific upon template removal.  This should only
+   * be
    * called from @ref esp::core::managedContainers::ManagedContainerBase.
    *
    * @param templateID the ID of the template to remove
@@ -112,37 +124,48 @@ class LightLayoutAttributesManager
       CORRADE_UNUSED const std::string& templateHandle) override {}
 
   /**
-   * @brief Add a copy of the @ref
-   * esp::metadata::attributes::LightLayoutAttributes shared_ptr object to
-   * the @ref objectLibrary_.
+   * @brief Not required for this manager.
    *
-   * @param LightLayoutAttributesTemplate The attributes template.
-   * @param LightLayoutAttributesHandle The key for referencing the template in
-   * the
-   * @ref objectLibrary_.
-   * @return The index in the @ref objectLibrary_ of object
-   * template.
+   * This method will perform any essential updating to the managed object
+   * before registration is performed. If this updating fails, registration will
+   * also fail.
+   * @param object the managed object to be registered
+   * @param objectHandle the name to register the managed object with.
+   * Expected to be valid.
+   * @param forceRegistration Should register object even if conditional
+   * registration checks fail.
+   * @return Whether the preregistration has succeeded and what handle to use to
+   * register the object if it has.
    */
-  int registerObjectFinalize(
-      attributes::LightLayoutAttributes::ptr LightLayoutAttributesTemplate,
-      const std::string& LightLayoutAttributesHandle,
-      CORRADE_UNUSED bool forceRegistration) override;
+  core::managedContainers::ManagedObjectPreregistration
+  preRegisterObjectFinalize(
+      CORRADE_UNUSED attributes::LightLayoutAttributes::ptr object,
+      CORRADE_UNUSED const std::string& objectHandle,
+      CORRADE_UNUSED bool forceRegistration) override {
+    // No pre-registration conditioning performed
+    return core::managedContainers::ManagedObjectPreregistration::Success;
+  }
+
+  /**
+   * @brief Not required for this manager.
+   *
+   * This method will perform any final manager-related handling after
+   * successfully registering an object.
+   *
+   * See @ref esp::attributes::managers::ObjectAttributesManager for an example.
+   *
+   * @param objectID the ID of the successfully registered managed object
+   * @param objectHandle The name of the managed object
+   */
+  void postRegisterObjectHandling(
+      CORRADE_UNUSED int objectID,
+      CORRADE_UNUSED const std::string& objectHandle) override {}
 
   /**
    * @brief Any lights-attributes-specific resetting that needs to happen on
    * reset.
    */
   void resetFinalize() override {}
-
-  /**
-   * @brief Light Attributes has no reason to check this value
-   * @param handle String name of primitive asset attributes desired
-   * @return whether handle exists or not in asset attributes library
-   */
-  bool isValidPrimitiveAttributes(
-      CORRADE_UNUSED const std::string& handle) override {
-    return false;
-  }
 
  public:
   ESP_SMART_POINTERS(LightLayoutAttributesManager)

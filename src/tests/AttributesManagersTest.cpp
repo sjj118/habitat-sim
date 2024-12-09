@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -7,10 +7,13 @@
 #include <string>
 
 #include "esp/metadata/MetadataMediator.h"
+#include "esp/metadata/managers/AOAttributesManager.h"
+#include "esp/metadata/managers/AbstractAttributesManager.h"
 #include "esp/metadata/managers/AssetAttributesManager.h"
-#include "esp/metadata/managers/AttributesManagerBase.h"
 #include "esp/metadata/managers/ObjectAttributesManager.h"
+#include "esp/metadata/managers/PbrShaderAttributesManager.h"
 #include "esp/metadata/managers/PhysicsAttributesManager.h"
+#include "esp/metadata/managers/SemanticAttributesManager.h"
 #include "esp/metadata/managers/StageAttributesManager.h"
 
 #include "configure.h"
@@ -25,23 +28,23 @@ using esp::metadata::PrimObjTypes;
 
 using esp::physics::MotionType;
 
-using AttrMgrs::AttributesManager;
+using AttrMgrs::AbstractAttributesManager;
 using Attrs::AbstractPrimitiveAttributes;
+using Attrs::ArticulatedObjectAttributes;
 using Attrs::CapsulePrimitiveAttributes;
 using Attrs::ConePrimitiveAttributes;
 using Attrs::CubePrimitiveAttributes;
 using Attrs::CylinderPrimitiveAttributes;
 using Attrs::IcospherePrimitiveAttributes;
 using Attrs::ObjectAttributes;
+using Attrs::PbrShaderAttributes;
 using Attrs::PhysicsManagerAttributes;
 using Attrs::SceneInstanceAttributes;
+using Attrs::SemanticAttributes;
 using Attrs::StageAttributes;
 using Attrs::UVSpherePrimitiveAttributes;
 
 namespace {
-const std::string physicsConfigFile =
-    Cr::Utility::Path::join(DATA_DIR,
-                            "test_assets/testing.physics_config.json");
 
 /**
  * @brief Test attributesManagers' functionality via loading, creating, copying
@@ -83,56 +86,52 @@ struct AttributesManagersTest : Cr::TestSuite::Tester {
                                bool setRenderHandle);
 
   /**
-   * @brief Test creation, copying and removal of new default/empty templates
-   * for Object, Physics and Stage Attributes Managers
+   * @brief Test creation, copying and removal of new attributes templates
+   * created as defaults from the passed non-template name of their required
+   * asset. For Objects and Stages, this asset is a .glb file; for Articulated
+   * Objects, this asset is the parent URDF file.
    * @tparam Class of attributes manager
    * @param mgr the Attributes Manager being tested,
    * @param renderHandle a legal render handle to set for the new template so
    * that registration won't fail.
    */
 
-  // specialization so we can ignore this for physics attributes
-  void processTemplateRenderAsset(
-      std::shared_ptr<AttrMgrs::PhysicsAttributesManager> mgr,
-      std::shared_ptr<Attrs::PhysicsManagerAttributes> newAttrTemplate0,
-      const std::string& handle) {}
+  // specialization for articulated objects - populate urdf_file with valid,
+  // existing urdf filepath
+  void processTemplateRequiredAsset(
+      std::shared_ptr<AttrMgrs::AOAttributesManager> mgr,
+      std::shared_ptr<Attrs::ArticulatedObjectAttributes> newAttrTemplate0,
+      const std::string& handle) {
+    auto attrTemplate1 = mgr->createObject(handle, false);
+
+    // set legitimate urdf handle in template from created template (creation
+    // process will make sure the value is legal)
+    newAttrTemplate0->setURDFPath(
+        attrTemplate1->template get<std::string>("urdf_filepath"));
+  }
 
   template <typename T, typename U>
-  void processTemplateRenderAsset(std::shared_ptr<T> mgr,
-                                  std::shared_ptr<U> newAttrTemplate0,
-                                  const std::string& handle) {
+  void processTemplateRequiredAsset(std::shared_ptr<T> mgr,
+                                    std::shared_ptr<U> newAttrTemplate0,
+                                    const std::string& handle) {
     auto attrTemplate1 = mgr->createObject(handle, false);
-    // set legitimate render handle in template
+    // set legitimate render handle in template from created template (creation
+    // process will make sure the value is legal)
     newAttrTemplate0->setRenderAssetHandle(
         attrTemplate1->template get<std::string>("render_asset"));
   }
 
-  template <typename T>
-  void testCreateAndRemoveDefault(std::shared_ptr<T> mgr,
-                                  const std::string& handle,
-                                  bool setRenderHandle);
   /**
-   * @brief This method will test the user-defined configuration values to see
-   * that they match with expected passed values.  The config is expected to
-   * hold one of each type that it supports.
-   * @param userConfig The configuration object whose contents are to be
-   * tested
-   * @param str_val Expected string value
-   * @param bool_val Expected boolean value
-   * @param double_val Exptected double value
-   * @param vec_val Expected Magnum::Vector3 value
-   * @param quat_val Expected Quaternion value - note that the JSON is read
-   * with scalar at idx 0, whereas the quaternion constructor takes the vector
-   * component in the first position and the scalar in the second.
+   * @brief Test creation, copying and removal of templates for lights
+   * attributes managers.
+   * @param mgr the Attributes Manager being tested,
+   * @param handle the handle of the desired attributes template to work with -
+   * this should be a legal, existing asset file for those configs that require
+   * a specific asset file to be registered
    */
-  void testUserDefinedConfigVals(
-      std::shared_ptr<esp::core::config::Configuration> userConfig,
-      const std::string& str_val,
-      bool bool_val,
-      int int_val,
-      double double_val,
-      Magnum::Vector3 vec_val,
-      Magnum::Quaternion quat_val);
+  template <typename T>
+  void testAssetBasedCreateAndRemove(std::shared_ptr<T> mgr,
+                                     const std::string& handle);
 
   /**
    * @brief Test creation, copying and removal of templates for primitive
@@ -156,40 +155,66 @@ struct AttributesManagersTest : Cr::TestSuite::Tester {
 
   /**
    * @brief This test will test creating, modifying, registering and deleting
-   * Attributes via the AttributesManager for PhysicsManagerAttributes. These
-   * tests should be consistent with most types of future attributes managers
-   * specializing the AttributesManager class template that follow the same
-   * expected behavior paths as extent attributes/attributesManagers.  Note :
-   * PrimitiveAssetAttributes exhibit slightly different behavior and need their
-   * own tests.
+   * Attributes via the AbstractAttributesManager for PhysicsManagerAttributes.
+   * These tests should be consistent with most types of future
+   * attributes managers specializing the AbstractAttributesManager class
+   * template that follow the same expected behavior paths as extent
+   * attributes/attributesManagers.  Note : PrimitiveAssetAttributes exhibit
+   * slightly different behavior and need their own tests.
    */
   void testPhysicsAttributesManagersCreate();
 
   /**
    * @brief This test will test creating, modifying, registering and deleting
-   * Attributes via the AttributesManager for StageAttributes.  These
+   * Attributes via the AbstractAttributesManager for PbrShaderAttributes. These
    * tests should be consistent with most types of future attributes managers
-   * specializing the AttributesManager class template that follow the same
-   * expected behavior paths as extent attributes/attributesManagers.  Note :
-   * PrimitiveAssetAttributes exhibit slightly different behavior and need their
-   * own tests.
+   * specializing the AbstractAttributesManager class template that follow the
+   * same expected behavior paths as extent attributes/attributesManagers.
+   */
+  void testPbrShaderAttributesManagersCreate();
+
+  /**
+   * @brief This test will test creating, modifying, registering and deleting
+   * Attributes via the AbstractAttributesManager for StageAttributes. These
+   * tests should be consistent with most types of future attributes managers
+   * specializing the AbstractAttributesManager class template that follow the
+   * same expected behavior paths as extent attributes/attributesManagers.
    */
   void testStageAttributesManagersCreate();
 
   /**
    * @brief This test will test creating, modifying, registering and deleting
-   * Attributes via the AttributesManager for ObjectAttributes.  These
+   * Attributes via the AbstractAttributesManager for SemanticAttributes. These
    * tests should be consistent with most types of future attributes managers
-   * specializing the AttributesManager class template that follow the same
-   * expected behavior paths as extent attributes/attributesManagers.  Note :
-   * PrimitiveAssetAttributes exhibit slightly different behavior and need their
-   * own tests.
+   * specializing the AbstractAttributesManager class template that follow the
+   * same expected behavior paths as extent attributes/attributesManagers.
+   */
+  void testSemanticAttributesManagersCreate();
+  /**
+   * @brief This test will test creating, modifying, registering and deleting
+   * Attributes via the AbstractAttributesManager for
+   * ArticulatedObjectAttributes. These tests should be consistent with most
+   * types of future attributes managers specializing the
+   * AbstractAttributesManager class template that follow the same expected
+   * behavior paths as extent attributes/attributesManagers.
+   */
+
+  void testArticulatedObjectAttributesManagersCreate();
+
+  /**
+   * @brief This test will test creating, modifying, registering and deleting
+   * Attributes via the AbstractAttributesManager for ObjectAttributes. These
+   * tests should be consistent with most types of future attributes managers
+   * specializing the AbstractAttributesManager class template that follow the
+   * same expected behavior paths as extent attributes/attributesManagers.  Note
+   * : PrimitiveAssetAttributes exhibit slightly different behavior and need
+   * their own tests.
    */
   void testObjectAttributesManagersCreate();
 
   /**
    * @brief This test will test creating, modifying, registering and deleting
-   * Attributes via the AttributesManager for LightLayoutsAttributes
+   * Attributes via the AbstractAttributesManager for LightLayoutsAttributes
    */
   void testLightLayoutAttributesManager();
 
@@ -200,16 +225,28 @@ struct AttributesManagersTest : Cr::TestSuite::Tester {
    */
   void testPrimitiveAssetAttributes();
 
+  /**
+   * @brief Test that primitive attribute-based object attributes exist and
+   * maintain appropriate format.
+   */
+  void testPrimitiveBasedObjectAttributes();
+
   // test member vars
 
   esp::logging::LoggingContext loggingContext_;
+  AttrMgrs::AOAttributesManager::ptr artObjAttributesManager_ = nullptr;
   AttrMgrs::AssetAttributesManager::ptr assetAttributesManager_ = nullptr;
   AttrMgrs::LightLayoutAttributesManager::ptr lightLayoutAttributesManager_ =
       nullptr;
   AttrMgrs::ObjectAttributesManager::ptr objectAttributesManager_ = nullptr;
+  AttrMgrs::PbrShaderAttributesManager::ptr pbrShaderAttributesManager_ =
+      nullptr;
   AttrMgrs::PhysicsAttributesManager::ptr physicsAttributesManager_ = nullptr;
   AttrMgrs::SceneInstanceAttributesManager::ptr
       sceneInstanceAttributesManager_ = nullptr;
+
+  AttrMgrs::SemanticAttributesManager::ptr semanticAttributesManager_ = nullptr;
+
   AttrMgrs::StageAttributesManager::ptr stageAttributesManager_ = nullptr;
 
 };  // struct AttributesManagersTest
@@ -219,19 +256,26 @@ AttributesManagersTest::AttributesManagersTest() {
   auto cfg = esp::sim::SimulatorConfiguration{};
   auto MM = MetadataMediator::create(cfg);
   // get attributes managers for default dataset
+  artObjAttributesManager_ = MM->getAOAttributesManager();
   assetAttributesManager_ = MM->getAssetAttributesManager();
   lightLayoutAttributesManager_ = MM->getLightLayoutAttributesManager();
   objectAttributesManager_ = MM->getObjectAttributesManager();
+  pbrShaderAttributesManager_ = MM->getPbrShaderAttributesManager();
   physicsAttributesManager_ = MM->getPhysicsAttributesManager();
   sceneInstanceAttributesManager_ = MM->getSceneInstanceAttributesManager();
+  semanticAttributesManager_ = MM->getSemanticAttributesManager();
   stageAttributesManager_ = MM->getStageAttributesManager();
 
   addTests({
       &AttributesManagersTest::testPhysicsAttributesManagersCreate,
+      &AttributesManagersTest::testPbrShaderAttributesManagersCreate,
+      &AttributesManagersTest::testSemanticAttributesManagersCreate,
       &AttributesManagersTest::testStageAttributesManagersCreate,
+      &AttributesManagersTest::testArticulatedObjectAttributesManagersCreate,
       &AttributesManagersTest::testObjectAttributesManagersCreate,
       &AttributesManagersTest::testLightLayoutAttributesManager,
       &AttributesManagersTest::testPrimitiveAssetAttributes,
+      &AttributesManagersTest::testPrimitiveBasedObjectAttributes,
   });
 }
 
@@ -240,7 +284,7 @@ AttributesManagersTest::AttributesManagersTest() {
  * and Stage Attributes Managers
  * @tparam Class of attributes manager
  * @param mgr the Attributes Manager being tested,
- * @param handle the handle of the desired attributes template to work with
+ * @param handle the handle of the desired attributes template to work with.
  */
 template <typename T>
 void AttributesManagersTest::testCreateAndRemove(std::shared_ptr<T> mgr,
@@ -429,10 +473,9 @@ void AttributesManagersTest::testRemoveAllButDefault(std::shared_ptr<T> mgr,
 }  // AttributesManagersTest::testRemoveAllButDefault
 
 template <typename T>
-void AttributesManagersTest::testCreateAndRemoveDefault(
+void AttributesManagersTest::testAssetBasedCreateAndRemove(
     std::shared_ptr<T> mgr,
-    const std::string& handle,
-    bool setRenderHandle) {
+    const std::string& handle) {
   // get starting number of templates
   int orignNumTemplates = mgr->getNumObjects();
   // assign template a handle
@@ -443,10 +486,15 @@ void AttributesManagersTest::testCreateAndRemoveDefault(
   // verify real template was returned
   CORRADE_VERIFY(newAttrTemplate0);
 
-  // create template from source handle, register it and retrieve it
+  // Register created template after giving it valid required asset handle
   // Note: registration of template means this is a copy of registered
-  // template
-  processTemplateRenderAsset(mgr, newAttrTemplate0, handle);
+  // template.
+  // Correctly process the passed template's required asset -
+  // for object and stage attributes this means handle must point to a valid,
+  // legal render asset;
+  // for articulated objects the handle must point to a valid, existing URDF
+  // file.
+  processTemplateRequiredAsset(mgr, newAttrTemplate0, handle);
   // register modified template and verify that this is the template now
   // stored
   int newID = mgr->registerObject(newAttrTemplate0, newHandle);
@@ -462,7 +510,7 @@ void AttributesManagersTest::testCreateAndRemoveDefault(
   // verify there are same number of templates as when we started
   CORRADE_COMPARE(orignNumTemplates, mgr->getNumObjects());
 
-}  // AttributesManagersTest::testCreateAndRemoveDefault
+}  // AttributesManagersTest::testAssetBasedCreateAndRemove
 
 template <typename T>
 void AttributesManagersTest::testAssetAttributesModRegRemove(
@@ -554,38 +602,116 @@ void AttributesManagersTest::testAssetAttributesTemplateCreateFromHandle(
 }  // AttributesManagersTest::testAssetAttributesTemplateCreateFromHandle
 
 void AttributesManagersTest::testPhysicsAttributesManagersCreate() {
+  const std::string physicsConfigFile =
+      Cr::Utility::Path::join(TEST_ASSETS, "testing.physics_config.json");
+
   CORRADE_INFO(
       "Start Test : Create, Edit, Remove Attributes for "
-      "PhysicsAttributesManager @"
+      "PhysicsAttributesManager  JSON config @"
       << physicsConfigFile);
 
-  // physics attributes manager attributes verifcation
+  // PhysicsAttributesManager config-loaded attributes processing verification
   testCreateAndRemove<AttrMgrs::PhysicsAttributesManager>(
       physicsAttributesManager_, physicsConfigFile);
-  testCreateAndRemoveDefault<AttrMgrs::PhysicsAttributesManager>(
-      physicsAttributesManager_, physicsConfigFile, false);
 }  // AttributesManagersTest::PhysicsAttributesManagersCreate
 
+void AttributesManagersTest::testPbrShaderAttributesManagersCreate() {
+  const std::string pbrShaderConfigFile =
+      Cr::Utility::Path::join(TEST_ASSETS, "testing.pbr_config.json");
+  CORRADE_INFO(
+      "Start Test : Create, Edit, Remove Attributes for "
+      "PbrShaderAttributes  JSON config @"
+      << pbrShaderConfigFile);
+
+  // PbrShaderAttributesManager manager config-loaded attributes processing
+  // verification
+  testCreateAndRemove<AttrMgrs::PbrShaderAttributesManager>(
+      pbrShaderAttributesManager_, pbrShaderConfigFile);
+
+}  // AttributesManagersTest::testPbrShaderAttributesManagersCreate
+
+void AttributesManagersTest::testArticulatedObjectAttributesManagersCreate() {
+  const std::string artObjConfigFile =
+      Cr::Utility::Path::join(TEST_ASSETS, "urdf/skinned_prism.ao_config.json");
+  CORRADE_INFO(
+      "Start Test : Create, Edit, Remove Attributes for "
+      "AO JSON config @"
+      << artObjConfigFile);
+
+  // Articulated object attributes manager config-loaded attributes processing
+  // verification
+  testCreateAndRemove<AttrMgrs::AOAttributesManager>(artObjAttributesManager_,
+                                                     artObjConfigFile);
+
+  // Valid URDF files that do not (idx 0) and do (idx 1) have existing
+  // JSON articulated object configs with the same name
+  const std::string validUrdfFiles[] = {
+      Cr::Utility::Path::join(TEST_ASSETS, "urdf/prim_chain.urdf"),
+      Cr::Utility::Path::join(TEST_ASSETS, "urdf/skinned_prism.urdf")};
+  for (int i = 0; i < 2; ++i) {
+    CORRADE_INFO(
+        "Start Default Test : Create, Edit, Remove Attributes built from "
+        "Articulated Object URDF file"
+        << (i == 0 ? "without" : "with") << "existing JSON @"
+        << validUrdfFiles[i]);
+    // Articulated object attributes manager attributes processing verification
+    // for attributes built from existing urdf file
+    testAssetBasedCreateAndRemove<AttrMgrs::AOAttributesManager>(
+        artObjAttributesManager_, validUrdfFiles[i]);
+  }
+
+}  // AttributesManagersTest::testArticulatedObjectAttributesManagersCreate
+
+void AttributesManagersTest::testSemanticAttributesManagersCreate() {
+  const std::string semanticConfigFile = Cr::Utility::Path::join(
+      TEST_ASSETS, "semantic/test_regions.semantic_config.json");
+  CORRADE_INFO(
+      "Start Test : Create, Edit, Remove Attributes for "
+      "Semantic JSON config @"
+      << semanticConfigFile);
+
+  // Semantic attributes manager config-loaded attributes processing
+  // verification
+  testCreateAndRemove<AttrMgrs::SemanticAttributesManager>(
+      semanticAttributesManager_, semanticConfigFile);
+
+}  // AttributesManagersTest::testSemanticAttributesManagersCreate()
+
 void AttributesManagersTest::testStageAttributesManagersCreate() {
-  std::string stageConfigFile =
-      Cr::Utility::Path::join(DATA_DIR, "test_assets/scenes/simple_room.glb");
+  const std::string stageConfigFile = Cr::Utility::Path::join(
+      TEST_ASSETS, "scenes/stage_floor1.stage_config.json");
 
   CORRADE_INFO(
       "Start Test : Create, Edit, Remove Attributes for "
       "StageAttributesManager @"
       << stageConfigFile);
 
-  // scene attributes manager attributes verifcation
+  // StageAttributesManager config-loaded attributes processing verification
   testCreateAndRemove<AttrMgrs::StageAttributesManager>(stageAttributesManager_,
                                                         stageConfigFile);
-  testCreateAndRemoveDefault<AttrMgrs::StageAttributesManager>(
-      stageAttributesManager_, stageConfigFile, true);
+
+  // Valid render asset files that do not (idx 0) and do (idx 1) have existing
+  // JSON stage configs with the same name.
+  const std::string validStageAssetFiles[] = {
+      Cr::Utility::Path::join(TEST_ASSETS, "scenes/plane.glb"),
+      Cr::Utility::Path::join(TEST_ASSETS, "scenes/simple_room.glb")};
+  for (int i = 0; i < 2; ++i) {
+    CORRADE_INFO(
+        "Start Default Test : Create, Edit, Remove Attributes built from Stage "
+        "render asset"
+        << validStageAssetFiles[i] << (i == 0 ? "without" : "with")
+        << "existing JSON config file");
+    // Stage attributes manager attributes processing verification for
+    // attributes built from existing stage render asset file
+    testAssetBasedCreateAndRemove<AttrMgrs::StageAttributesManager>(
+        stageAttributesManager_, validStageAssetFiles[i]);
+  }
 
 }  // AttributesManagersTest::StageAttributesManagersCreate
 
 void AttributesManagersTest::testObjectAttributesManagersCreate() {
-  std::string objectConfigFile = Cr::Utility::Path::join(
-      DATA_DIR, "test_assets/objects/chair.object_config.json");
+  const std::string objectConfigFile =
+      Cr::Utility::Path::join(TEST_ASSETS, "objects/chair.object_config.json");
 
   CORRADE_INFO(
       "Start Test : Create, Edit, Remove Attributes for "
@@ -595,44 +721,63 @@ void AttributesManagersTest::testObjectAttributesManagersCreate() {
   int origNumFileBased = objectAttributesManager_->getNumFileTemplateObjects();
   int origNumPrimBased = objectAttributesManager_->getNumSynthTemplateObjects();
 
-  // object attributes manager attributes verifcation
+  // ObjectAttributesManager config-loaded attributes processing verification
   testCreateAndRemove<AttrMgrs::ObjectAttributesManager>(
       objectAttributesManager_, objectConfigFile);
-  // verify that no new file-based and no new synth based template objects
-  // remain
-  int newNumFileBased1 = objectAttributesManager_->getNumFileTemplateObjects();
-  int newNumPrimBased1 = objectAttributesManager_->getNumSynthTemplateObjects();
-  CORRADE_COMPARE(origNumFileBased, newNumFileBased1);
-  CORRADE_COMPARE(origNumPrimBased, newNumPrimBased1);
-  testCreateAndRemoveDefault<AttrMgrs::ObjectAttributesManager>(
-      objectAttributesManager_, objectConfigFile, true);
-  // verify that no new file-based and no new synth based template objects
-  // remain
-  int newNumFileBased2 = objectAttributesManager_->getNumFileTemplateObjects();
-  int newNumPrimBased2 = objectAttributesManager_->getNumSynthTemplateObjects();
-  CORRADE_COMPARE(origNumFileBased, newNumFileBased2);
-  CORRADE_COMPARE(origNumPrimBased, newNumPrimBased2);
+  // Valid render asset files that do not (idx 0) and do (idx 1) have existing
+  // JSON object configs with the same name.
+  const std::string validObjectAssetFiles[] = {
+      Cr::Utility::Path::join(TEST_ASSETS, "objects/5boxes.glb"),
+      Cr::Utility::Path::join(TEST_ASSETS, "objects/chair.glb")};
+  for (int i = 0; i < 2; ++i) {
+    CORRADE_INFO(
+        "Start Default Tests : Create, Edit, Remove Attributes built from "
+        "Object render asset"
+        << validObjectAssetFiles[i] << (i == 0 ? "without" : "with")
+        << "existing JSON config file");
+    // verify that no new file-based and no new synth based template objects
+    // remain
+    int newNumFileBased1 =
+        objectAttributesManager_->getNumFileTemplateObjects();
+    int newNumPrimBased1 =
+        objectAttributesManager_->getNumSynthTemplateObjects();
+    CORRADE_COMPARE(origNumFileBased, newNumFileBased1);
+    CORRADE_COMPARE(origNumPrimBased, newNumPrimBased1);
+    testAssetBasedCreateAndRemove<AttrMgrs::ObjectAttributesManager>(
+        objectAttributesManager_, validObjectAssetFiles[i]);
+    // verify that no new file-based and no new synth based template objects
+    // remain
+    int newNumFileBased2 =
+        objectAttributesManager_->getNumFileTemplateObjects();
+    int newNumPrimBased2 =
+        objectAttributesManager_->getNumSynthTemplateObjects();
+    CORRADE_COMPARE(origNumFileBased, newNumFileBased2);
+    CORRADE_COMPARE(origNumPrimBased, newNumPrimBased2);
 
-  // test adding many and removing all but defaults
-  testRemoveAllButDefault<AttrMgrs::ObjectAttributesManager>(
-      objectAttributesManager_, objectConfigFile, true);
-  // verify that no new file-based and no new synth based template objects
-  // remain
-  int newNumFileBased3 = objectAttributesManager_->getNumFileTemplateObjects();
-  int newNumPrimBased3 = objectAttributesManager_->getNumSynthTemplateObjects();
-  CORRADE_COMPARE(origNumFileBased, newNumFileBased3);
-  CORRADE_COMPARE(origNumPrimBased, newNumPrimBased3);
+    // test adding many and removing all but defaults
+    testRemoveAllButDefault<AttrMgrs::ObjectAttributesManager>(
+        objectAttributesManager_, validObjectAssetFiles[i], true);
+    // verify that no new file-based and no new synth based template objects
+    // remain
+    int newNumFileBased3 =
+        objectAttributesManager_->getNumFileTemplateObjects();
+    int newNumPrimBased3 =
+        objectAttributesManager_->getNumSynthTemplateObjects();
+    CORRADE_COMPARE(origNumFileBased, newNumFileBased3);
+    CORRADE_COMPARE(origNumPrimBased, newNumPrimBased3);
+  }
+
 }  // AttributesManagersTest::ObjectAttributesManagersCreate test
 
 void AttributesManagersTest::testLightLayoutAttributesManager() {
-  std::string lightConfigFile = Cr::Utility::Path::join(
-      DATA_DIR, "test_assets/lights/test_lights.lighting_config.json");
+  const std::string lightConfigFile = Cr::Utility::Path::join(
+      TEST_ASSETS, "lights/test_lights.lighting_config.json");
 
   CORRADE_INFO(
       "Start Test : Create, Edit, Remove Attributes for "
       "LightLayoutAttributesManager @"
       << lightConfigFile);
-  // light attributes manager attributes verifcation
+  // LightAttributesManager config-loaded attributes processing verification
   testCreateAndRemoveLights(lightLayoutAttributesManager_, lightConfigFile);
 
 }  // AttributesManagersTest::LightLayoutAttributesManagerTest
@@ -784,7 +929,122 @@ void AttributesManagersTest::testPrimitiveAssetAttributes() {
     // test that a new template can be created from the specified handles
     testAssetAttributesTemplateCreateFromHandle(uvSphereWireframeHandle);
   }
-}  // AttributesManagersTest::AsssetAttributesManagerGetAndModify test
+}  // AttributesManagersTest::AssetAttributesManagerGetAndModify test
+
+void AttributesManagersTest::testPrimitiveBasedObjectAttributes() {
+  // get all handles of templates for primitive-based render objects
+  std::vector<std::string> primObjAssetHandles =
+      objectAttributesManager_->getSynthTemplateHandlesBySubstring("");
+
+  // there should be 1 prim template per default primitive asset template
+  int numPrimsExpected =
+      static_cast<int>(esp::metadata::PrimObjTypes::END_PRIM_OBJ_TYPES);
+  // verify the number of primitive templates
+  CORRADE_COMPARE(numPrimsExpected, primObjAssetHandles.size());
+
+  AbstractPrimitiveAttributes::ptr primAttr;
+  {
+    // test that there are existing templates for each key, and that they have
+    // valid values to be used to construct magnum primitives
+    for (int i = 0; i < numPrimsExpected; ++i) {
+      std::string handle = primObjAssetHandles[i];
+      CORRADE_VERIFY(!handle.empty());
+      primAttr = assetAttributesManager_->getObjectCopyByHandle(handle);
+      CORRADE_VERIFY(primAttr);
+      CORRADE_VERIFY(primAttr->isValidTemplate());
+      // verify that the attributes contains the handle, and the handle contains
+      // the expected class name
+      std::string className =
+          esp::metadata::managers::AssetAttributesManager::PrimitiveNames3DMap
+              .at(static_cast<esp::metadata::PrimObjTypes>(
+                  primAttr->getPrimObjType()));
+
+      CORRADE_COMPARE(primAttr->getHandle(), handle);
+      CORRADE_VERIFY(handle.find(className) != std::string::npos);
+    }
+  }
+  // empty vector of handles
+  primObjAssetHandles.clear();
+  {
+    // test that existing template handles can be accessed via name string.
+    // This access is case insensitive
+    primObjAssetHandles =
+        objectAttributesManager_->getSynthTemplateHandlesBySubstring(
+            "CONESOLID");
+    // should only be one handle in this vector
+    CORRADE_COMPARE(primObjAssetHandles.size(), 1);
+    // handle should not be empty and be long enough to hold class name prefix
+    CORRADE_COMPARE_AS(primObjAssetHandles[0].length(), 9,
+                       Cr::TestSuite::Compare::Greater);
+    // coneSolid should appear in handle
+    std::string checkStr("coneSolid");
+    CORRADE_VERIFY(primObjAssetHandles[0].find(checkStr) != std::string::npos);
+    // empty vector of handles
+    primObjAssetHandles.clear();
+
+    // test that existing template handles can be accessed through exclusion -
+    // all but certain string.  This access is case insensitive
+    primObjAssetHandles =
+        objectAttributesManager_->getSynthTemplateHandlesBySubstring(
+            "CONESOLID", false);
+    // should be all handles but coneSolid handle here
+    CORRADE_COMPARE((numPrimsExpected - 1), primObjAssetHandles.size());
+    for (auto primObjAssetHandle : primObjAssetHandles) {
+      CORRADE_COMPARE(primObjAssetHandle.find(checkStr), std::string::npos);
+    }
+  }
+  // empty vector of handles
+  primObjAssetHandles.clear();
+
+  // test that primitive asset attributes are able to be modified and saved and
+  // the changes persist, while the old templates are not removed
+  {
+    // get existing default cylinder handle
+    primObjAssetHandles = assetAttributesManager_->getTemplateHandlesByPrimType(
+        esp::metadata::PrimObjTypes::CYLINDER_SOLID);
+    // should only be one handle in this vector
+    CORRADE_COMPARE(primObjAssetHandles.size(), 1);
+    // primitive render object uses primitive render asset as handle
+    std::string origCylinderHandle = primObjAssetHandles[0];
+    primAttr =
+        assetAttributesManager_->getObjectCopyByHandle(origCylinderHandle);
+    // verify that the origin handle matches what is expected
+    CORRADE_COMPARE(primAttr->getHandle(), origCylinderHandle);
+    // get original number of rings for this cylinder
+    int origNumRings = primAttr->getNumRings();
+    // modify attributes - this will change handle
+    primAttr->setNumRings(2 * origNumRings);
+    // verify that internal name of attributes has changed due to essential
+    // quantity being modified
+    std::string newHandle = primAttr->getHandle();
+
+    CORRADE_COMPARE_AS(newHandle, origCylinderHandle,
+                       Cr::TestSuite::Compare::NotEqual);
+    // set bogus file directory, to validate that copy is registered
+    primAttr->setFileDirectory("test0");
+    // register new attributes
+    int idx = assetAttributesManager_->registerObject(primAttr);
+
+    CORRADE_VERIFY(idx != esp::ID_UNDEFINED);
+    // set new test label, to validate against retrieved copy
+    primAttr->setFileDirectory("test1");
+    // retrieve registered attributes copy
+    AbstractPrimitiveAttributes::ptr primAttr2 =
+        assetAttributesManager_->getObjectCopyByHandle(newHandle);
+    // verify pre-reg and post-reg are named the same
+    CORRADE_COMPARE(primAttr->getHandle(), primAttr2->getHandle());
+    // verify retrieved attributes is copy, not original
+
+    CORRADE_COMPARE_AS(primAttr->getFileDirectory(),
+                       primAttr2->getFileDirectory(),
+                       Cr::TestSuite::Compare::NotEqual);
+    // remove modified attributes
+    AbstractPrimitiveAttributes::ptr primAttr3 =
+        assetAttributesManager_->removeObjectByHandle(newHandle);
+    CORRADE_VERIFY(primAttr3);
+  }
+
+}  // AttributesManagersTest::testPrimitiveBasedObjectAttributes test
 
 }  // namespace
 

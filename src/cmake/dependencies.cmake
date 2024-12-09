@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -35,8 +35,19 @@ else()
   set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${DEPS_DIR}/eigen/cmake")
 endif()
 
-if(NOT IMGUI_DIR)
-  set(IMGUI_DIR "${DEPS_DIR}/imgui")
+# Zstd, needed by BasisImporter. Let it find a system package on its own, if
+# preferred.
+if(NOT USE_SYSTEM_ZSTD)
+  set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+  # Create a static library so the plugin is self-contained
+  set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+  # Basis doesn't use any multithreading in zstd, this prevents a need to link
+  # to pthread on Linux
+  set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+  # Don't build Zstd tests if enable_testing() was called in parent project
+  set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${DEPS_DIR}/zstd/build/cmake" EXCLUDE_FROM_ALL)
 endif()
 
 # tinyxml2
@@ -82,14 +93,6 @@ if(BUILD_ASSIMP_SUPPORT)
   find_package(Assimp REQUIRED)
 endif()
 
-# v-hacd
-if(BUILD_WITH_VHACD)
-  set(NO_OPENCL ON CACHE BOOL "NO_OPENCL" FORCE)
-  set(NO_OPENMP ON CACHE BOOL "NO_OPENMP" FORCE)
-  # adding /src/VHACD_Lib instead of /src since /src contains unneccesary test files
-  add_subdirectory("${DEPS_DIR}/v-hacd/src/VHACD_Lib")
-endif()
-
 # audio
 if(BUILD_WITH_AUDIO)
   find_library(
@@ -126,7 +129,7 @@ if(BUILD_PYTHON_BINDINGS)
 
   # Let the Find module do proper version checks on what we found (it uses the
   # same PYTHON_EXECUTABLE variable, will pick it up from the cache)
-  find_package(PythonInterp 3.7 REQUIRED)
+  find_package(PythonInterp 3.9 REQUIRED)
 
   message(STATUS "Bindings being generated for python at ${PYTHON_EXECUTABLE}")
 
@@ -140,7 +143,7 @@ if(BUILD_PYTHON_BINDINGS)
 endif()
 
 if(BUILD_WITH_BULLET AND NOT USE_SYSTEM_BULLET)
-  # The below block except for the visiblity patch verbatim copied from
+  # The below block except for the visibility patch verbatim copied from
   # https://doc.magnum.graphics/magnum/namespaceMagnum_1_1BulletIntegration.html
 
   # Disable Bullet tests and demos
@@ -164,7 +167,7 @@ if(BUILD_WITH_BULLET AND NOT USE_SYSTEM_BULLET)
   # libs, causing linker errors on Magnum side. If you have CMake 3.13, the
   # Find module is able to correct that on its own, otherwise you need to
   # enable BUILD_SHARED_LIBS to build as shared.
-  if((NOT CORRADE_TARGET_EMSCRIPTEN) AND CMAKE_VERSION VERSION_LESS 3.13)
+  if(CMAKE_VERSION VERSION_LESS 3.13)
     set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
     # however the whole Habitat is built with -fvisibility=hidden and Bullet
     # doesn't export any of its symbols and relies on symbols being visible by
@@ -176,8 +179,8 @@ if(BUILD_WITH_BULLET AND NOT USE_SYSTEM_BULLET)
     # shared libs)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   endif()
-  ## Bullet Optimisation Bug
-  # We need to define this macro for bullet to bypass an early-out optimisation that
+  ## Bullet Optimization Bug
+  # We need to define this macro for bullet to bypass an early-out optimization that
   # was added to bullet via this PR https://github.com/bulletphysics/bullet3/pull/4190 ,
   # specifically here :
   #      https://github.com/erwincoumans/bullet3/blob/28b951c128b53e1dcf26271dd47b88776148a940/src/BulletCollision/CollisionDispatch/btConvexConcaveCollisionAlgorithm.cpp#L106
@@ -193,11 +196,26 @@ if(NOT USE_SYSTEM_MAGNUM)
   set(MAGNUM_BUILD_PLUGINS_STATIC ON CACHE BOOL "" FORCE)
   set(MAGNUM_BUILD_STATIC ON CACHE BOOL "" FORCE)
   set(MAGNUM_BUILD_STATIC_PIC ON CACHE BOOL "" FORCE)
+  # Always use EGL on platforms that support it. This means both windowless and
+  # windowed applications will use it. If you are experiencing driver issues or
+  # are on an older system where EGL doesn't really work yet, you might want to
+  # set MAGNUM_TARGET_EGL back to OFF below.
+  if(NOT CORRADE_TARGET_APPLE AND NOT CORRADE_TARGET_WINDOWS)
+    set(MAGNUM_TARGET_EGL ON CACHE BOOL "" FORCE)
+  endif()
 
-  # These are enabled by default but we don't need them right now -- disabling
-  # for slightly faster builds. If you need any of these, simply delete a line.
+  # These are enabled by default but we don't need them for anything yet
+  set(MAGNUM_WITH_SHADERTOOLS OFF CACHE BOOL "" FORCE)
+  # These used to be disabled here but now aren't, explicitly enable them to
+  # update options in existing builds
+  set(MAGNUM_WITH_MATERIALTOOLS ON CACHE BOOL "" FORCE)
+
+  # These are enabled by default but we don't need them if not building GUI
+  # viewers -- disabling for slightly faster builds. If you need any of these
+  # always, simply delete a line.
   set(MAGNUM_WITH_TEXT OFF CACHE BOOL "" FORCE)
   set(MAGNUM_WITH_TEXTURETOOLS OFF CACHE BOOL "" FORCE)
+  set(MAGNUM_WITH_STBTRUETYPEFONT OFF CACHE BOOL "" FORCE)
 
   # These are not enabled by default but we need them
   set(MAGNUM_WITH_ANYSCENEIMPORTER ON CACHE BOOL "" FORCE)
@@ -205,6 +223,7 @@ if(NOT USE_SYSTEM_MAGNUM)
     set(MAGNUM_WITH_ASSIMPIMPORTER ON CACHE BOOL "" FORCE)
   endif()
   set(MAGNUM_WITH_GLTFIMPORTER ON CACHE BOOL "" FORCE)
+  set(MAGNUM_WITH_UFBXIMPORTER ON CACHE BOOL "" FORCE)
   set(MAGNUM_WITH_ANYIMAGEIMPORTER ON CACHE BOOL "" FORCE)
   set(MAGNUM_WITH_ANYIMAGECONVERTER ON CACHE BOOL "" FORCE)
   set(MAGNUM_WITH_KTXIMPORTER ON CACHE BOOL "" FORCE)
@@ -215,17 +234,12 @@ if(NOT USE_SYSTEM_MAGNUM)
   set(MAGNUM_WITH_EMSCRIPTENAPPLICATION OFF CACHE BOOL "" FORCE)
   set(MAGNUM_WITH_GLFWAPPLICATION OFF CACHE BOOL "" FORCE)
   set(MAGNUM_WITH_EIGEN ON CACHE BOOL "" FORCE) # Eigen integration
-  set(MAGNUM_WITH_IMGUI ON CACHE BOOL "" FORCE) # ImGui integration
   # GltfSceneConverter and KtxImageConverter are needed only by
   # BatchRendererTest and are optional
   #set(MAGNUM_WITH_GLTFSCENECONVERTER ON CACHE BOOL "" FORCE)
   #set(MAGNUM_WITH_KTXIMAGECONVERTER ON CACHE BOOL "" FORCE)
   if(BUILD_PYTHON_BINDINGS)
     set(MAGNUM_WITH_PYTHON ON CACHE BOOL "" FORCE) # Python bindings
-  endif()
-  # We only support WebGL2
-  if(CORRADE_TARGET_EMSCRIPTEN)
-    set(MAGNUM_TARGET_GLES2 OFF CACHE BOOL "" FORCE)
   endif()
   if(BUILD_TEST)
     set(MAGNUM_WITH_OPENGLTESTER ON CACHE BOOL "" FORCE)
@@ -236,8 +250,6 @@ if(NOT USE_SYSTEM_MAGNUM)
   # formats (BC7 mode 6 has > 1 MB tables, ATC/FXT1/PVRTC2 are quite rare and
   # not supported by Magnum).
   set(BASIS_UNIVERSAL_DIR "${DEPS_DIR}/basis-universal")
-  # Disabling Zstd for now, when it's actually needed we bundle a submodule
-  set(CMAKE_DISABLE_FIND_PACKAGE_Zstd ON)
   set(
     CMAKE_CXX_FLAGS
     "${CMAKE_CXX_FLAGS} -DBASISD_SUPPORT_BC7_MODE6_OPAQUE_ONLY=0 -DBASISD_SUPPORT_ATC=0 -DBASISD_SUPPORT_FXT1=0 -DBASISD_SUPPORT_PVRTC2=0"
@@ -268,11 +280,6 @@ if(NOT USE_SYSTEM_MAGNUM)
     # OpenEXR implicitly bundles Imath. However, without this only the first
     # CMake run will pass and subsequent runs will fail.
     set(CMAKE_DISABLE_FIND_PACKAGE_Imath ON)
-    # Disable threading on Emscripten. Brings more problems than is currently
-    # worth-
-    if(CORRADE_TARGET_EMSCRIPTEN)
-      set(OPENEXR_ENABLE_THREADING OFF CACHE BOOL "" FORCE)
-    endif()
     # These variables may be used by other projects, so ensure they're reset
     # back to their original values after. OpenEXR forces CMAKE_DEBUG_POSTFIX
     # to _d, which isn't desired outside of that library.
@@ -298,44 +305,68 @@ if(NOT USE_SYSTEM_MAGNUM)
   endif()
 
   if(BUILD_GUI_VIEWERS)
-    if(CORRADE_TARGET_EMSCRIPTEN)
-      set(MAGNUM_WITH_EMSCRIPTENAPPLICATION ON CACHE BOOL "" FORCE)
-    else()
-      if(NOT USE_SYSTEM_GLFW)
-        set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-        # These two will be off-by-default when GLFW 3.4 gets released
-        set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-        add_subdirectory("${DEPS_DIR}/glfw")
-      endif()
-      set(MAGNUM_WITH_GLFWAPPLICATION ON CACHE BOOL "" FORCE)
+    set(MAGNUM_WITH_TEXT ON CACHE BOOL "" FORCE)
+    set(MAGNUM_WITH_STBTRUETYPEFONT ON CACHE BOOL "" FORCE)
+    if(NOT USE_SYSTEM_GLFW)
+      set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+      # These two will be off-by-default when GLFW 3.4 gets released
+      set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+      set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+      add_subdirectory("${DEPS_DIR}/glfw")
     endif()
+    set(MAGNUM_WITH_GLFWAPPLICATION ON CACHE BOOL "" FORCE)
   endif()
-  if(APPLE)
-    set(MAGNUM_WITH_WINDOWLESSCGLAPPLICATION ON CACHE BOOL "" FORCE)
-  elseif(WIN32)
-    set(MAGNUM_WITH_WINDOWLESSWGLAPPLICATION ON CACHE BOOL "" FORCE)
-  elseif(CORRADE_TARGET_EMSCRIPTEN)
-    set(MAGNUM_WITH_WINDOWLESSEGLAPPLICATION ON CACHE INTERNAL "" FORCE)
-  elseif(UNIX)
-    if(BUILD_GUI_VIEWERS)
-      set(MAGNUM_WITH_WINDOWLESSGLXAPPLICATION ON CACHE INTERNAL "" FORCE)
-      set(MAGNUM_WITH_WINDOWLESSEGLAPPLICATION OFF CACHE INTERNAL "" FORCE)
+  if(MAGNUM_TARGET_EGL) # Includes also Emscripten
+    set(MAGNUM_WITH_WINDOWLESSEGLAPPLICATION ON CACHE BOOL "" FORCE)
+  else()
+    # Disable again to avoid more than one Windowless*Application being
+    # enabled, which makes linking to the Magnum::WindowlessApplication alias
+    # pick one of them arbitrarily.
+    set(MAGNUM_WITH_WINDOWLESSEGLAPPLICATION OFF CACHE BOOL "" FORCE)
+    if(CORRADE_TARGET_APPLE)
+      set(MAGNUM_WITH_WINDOWLESSCGLAPPLICATION ON CACHE BOOL "" FORCE)
+    elseif(CORRADE_TARGET_UNIX)
+      # Just for cases when EGL wouldn't work
+      set(MAGNUM_WITH_WINDOWLESSGLXAPPLICATION ON CACHE BOOL "" FORCE)
+    elseif(CORRADE_TARGET_WINDOWS)
+      set(MAGNUM_WITH_WINDOWLESSWGLAPPLICATION ON CACHE BOOL "" FORCE)
     else()
-      set(MAGNUM_WITH_WINDOWLESSGLXAPPLICATION OFF CACHE INTERNAL "" FORCE)
-      set(MAGNUM_WITH_WINDOWLESSEGLAPPLICATION ON CACHE INTERNAL "" FORCE)
+      message(FATAL_ERROR "Unsupported platform")
     endif()
   endif()
   add_subdirectory("${DEPS_DIR}/magnum")
   add_subdirectory("${DEPS_DIR}/magnum-plugins")
   add_subdirectory("${DEPS_DIR}/magnum-integration")
   if(BUILD_PYTHON_BINDINGS)
+    # Make Magnum text rendering plugins (used by the native viewer) available
+    # for Python as well; and reset that back to strange build procedures that
+    # turn some features off again later can still work.
+    set(
+      common_plugins
+      Magnum::AnyImageConverter
+      Magnum::AnyImageImporter
+      Magnum::AnySceneImporter
+      MagnumPlugins::AssimpImporter
+      MagnumPlugins::BasisImporter
+      MagnumPlugins::GltfImporter
+      MagnumPlugins::StbImageConverter
+      MagnumPlugins::StbImageImporter
+    )
+    if(BUILD_GUI_VIEWERS)
+      set(MAGNUM_PYTHON_BINDINGS_STATIC_PLUGINS ${common_plugins}
+                                                MagnumPlugins::StbTrueTypeFont
+          CACHE STRING "" FORCE
+      )
+    else()
+      set(MAGNUM_PYTHON_BINDINGS_STATIC_PLUGINS ${common_plugins} CACHE STRING "" FORCE)
+    endif()
     add_subdirectory("${DEPS_DIR}/magnum-bindings")
   endif()
 
 endif()
 
-if(NOT CORRADE_TARGET_EMSCRIPTEN)
-  add_library(atomic_wait STATIC ${DEPS_DIR}/atomic_wait/atomic_wait.cpp)
-  target_include_directories(atomic_wait PUBLIC ${DEPS_DIR}/atomic_wait)
-endif()
+add_library(
+  atomic_wait STATIC
+  ${DEPS_DIR}/atomic_wait/atomic_wait.cpp
+)
+target_include_directories(atomic_wait PUBLIC ${DEPS_DIR}/atomic_wait)

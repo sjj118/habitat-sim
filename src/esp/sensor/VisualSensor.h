@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -27,11 +27,17 @@ namespace sensor {
 
 using Mn::Math::Literals::operator""_degf;
 
+/**
+ * @brief This enum describes the type of information the Semantic Sensor will
+ * render. This is an alias for the idx enum defined in scene node.
+ */
+using SemanticSensorTarget = esp::scene::SceneNodeSemanticDataIDX;
+
 struct VisualSensorSpec : public SensorSpec {
   /**
    * @brief height x width
    */
-  vec2i resolution = {128, 128};
+  Mn::Vector2i resolution = {128, 128};
   /**
    * @brief Number of components in buffer values, eg. 4 channels for RGBA
    */
@@ -52,14 +58,21 @@ struct VisualSensorSpec : public SensorSpec {
    * @brief color used to clear the framebuffer
    */
   Mn::Color4 clearColor = {0, 0, 0, 1};
+
+  /**
+   * @brief the type of semantic information being rendered by the semantic
+   * sensor. Ignored by non-semantic sensors
+   */
+  SemanticSensorTarget semanticTarget = SemanticSensorTarget::SemanticID;
+
   VisualSensorSpec();
   void sanityCheck() const override;
   bool isVisualSensorSpec() const override { return true; }
   bool operator==(const VisualSensorSpec& a) const;
   ESP_SMART_POINTERS(VisualSensorSpec)
 };
-// Represents a sensor that provides visual data from the environment to an
-// agent
+
+// Represents a sensor that provides visual data from the environment
 class VisualSensor : public Sensor {
  public:
   explicit VisualSensor(scene::SceneNode& node, VisualSensorSpec::ptr spec);
@@ -160,7 +173,7 @@ class VisualSensor : public Sensor {
     visualSensorSpec_->resolution = {height, width};
   }
 
-  void setResolution(vec2i resolution) {
+  void setResolution(const Magnum::Vector2i& resolution) {
     CORRADE_ASSERT(resolution[0] > 0 && resolution[1] > 0,
                    "VisualSensor::setResolution(): resolution height and "
                    "width must be greater than 0", );
@@ -171,6 +184,11 @@ class VisualSensor : public Sensor {
    * @brief Return a pointer to this visual sensor's SensorSpec
    */
   VisualSensorSpec::ptr specification() const { return visualSensorSpec_; }
+
+  /**
+   * @brief Return this sensor's projection matrix
+   */
+  virtual Mn::Matrix4 getProjectionMatrix() const = 0;
 
   /**
    * @brief Returns RenderCamera
@@ -191,6 +209,15 @@ class VisualSensor : public Sensor {
    * @brief Returns the FOV of this Sensor
    */
   Mn::Deg getFOV() const { return hfov_; }
+
+  /**
+   * @brief Return whether or not this Visual Sensor can use the HBAO effect
+   */
+  bool canUseHBAO() const override {
+    // TODO Expand HBAO support to other visual sensors
+    return (visualSensorSpec_->sensorSubType == SensorSubType::Pinhole) ||
+           (visualSensorSpec_->sensorSubType == SensorSubType::Orthographic);
+  }
 
  protected:
   /** @brief field of view

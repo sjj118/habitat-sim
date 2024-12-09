@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -18,6 +18,27 @@ namespace io {
  * will be added.
  */
 std::string changeExtension(const std::string& file, const std::string& ext);
+
+/**
+ * @brief This function will recursively remove any ellipsis in paths or path
+ * patterns, as well as the parent directory the ellisis is bypassing. This is
+ * so that if the ellipsis spans an OS link any function consuming the path does
+ * not get lost. If the ellipsis is at the beginning of @p srcPath then it is
+ * ignored.
+ * @param srcPath The path to filter
+ * @return The filtered path.
+ */
+std::string normalizePath(const std::string& srcPath);
+
+/**
+ * @brief This function will find the relative path of @p toRelPath relative to
+ * @p absPath
+ * @param toRelPath The absolute path to be converted to relative
+ * @param absPath The absolute path the conversion should be relative to
+ * @return the relative path of @p toRelPath relative to @p absPath
+ */
+std::string getPathRelativeToAbsPath(const std::string& toRelPath,
+                                     const std::string& absPath);
 
 /**
  * @brief This function will perform [glob-based pattern matching]

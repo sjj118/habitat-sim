@@ -1,9 +1,8 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
 #include "VisualSensor.h"
-#include <Magnum/EigenIntegration/Integration.h>
 #include <Magnum/ImageView.h>
 #include <Magnum/PixelFormat.h>
 
@@ -50,14 +49,14 @@ void VisualSensorSpec::sanityCheck() const {
       "VisualSensorSpec::sanityCheck(): the value of the channels which is"
           << channels << "is illegal", );
   CORRADE_ASSERT(
-      near > 0.0 && far > near,
+      near > 0.0f && far > near,
       "VisualSensorSpec::sanityCheck(): the near or far plane is illegal.", );
 }
 
 bool VisualSensorSpec::operator==(const VisualSensorSpec& a) const {
   return SensorSpec::operator==(a) && resolution == a.resolution &&
          channels == a.channels && gpu2gpuTransfer == a.gpu2gpuTransfer &&
-         far == a.far && near == a.near;
+         far == a.far && near == a.near && a.clearColor == clearColor;
 }
 
 VisualSensor::VisualSensor(scene::SceneNode& node, VisualSensorSpec::ptr spec)
@@ -128,7 +127,7 @@ void VisualSensor::readObservation(Observation& obs) {
 bool VisualSensor::getObservation(sim::Simulator& sim, Observation& obs) {
   // TODO: check if sensor is valid?
   // TODO: have different classes for the different types of sensors
-  //
+
   if (!hasRenderTarget())
     return false;
 

@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -66,7 +66,12 @@ void initSensorBindings(py::module& m) {
       .value("FISHEYE", SensorSubType::Fisheye)
       .value("EQUIRECTANGULAR", SensorSubType::Equirectangular)
       .value("IMPULSERESPONSE", SensorSubType::ImpulseResponse);
-  ;
+
+  // NOTE : esp::sensor::SemanticSensorTarget is an alias for
+  // esp::scene::SceneNodeSemanticDataIDX.
+  py::enum_<SemanticSensorTarget>(m, "SemanticSensorTarget")
+      .value("SEMANTIC_ID", SemanticSensorTarget::SemanticID)
+      .value("OBJECT_ID", SemanticSensorTarget::ObjectID);
 
   py::enum_<FisheyeSensorModelType>(m, "FisheyeSensorModelType")
       .value("DOUBLE_SPHERE", FisheyeSensorModelType::DoubleSphere);
@@ -82,15 +87,15 @@ void initSensorBindings(py::module& m) {
       .def_readwrite("noise_model", &SensorSpec::noiseModel)
       .def_property(
           "noise_model_kwargs",
-          [](SensorSpec& self) -> py::dict {
-            py::handle handle = py::cast(self);
-            if (!py::hasattr(handle, "__noise_model_kwargs")) {
-              py::setattr(handle, "__noise_model_kwargs", py::dict());
+          // Note: self remains a python object handle
+          [](py::handle self) -> py::dict {
+            if (!py::hasattr(self, "__noise_model_kwargs")) {
+              py::setattr(self, "__noise_model_kwargs", py::dict());
             }
-            return py::getattr(handle, "__noise_model_kwargs");
+            return py::getattr(self, "__noise_model_kwargs");
           },
-          [](SensorSpec& self, py::dict v) {
-            py::setattr(py::cast(self), "__noise_model_kwargs", std::move(v));
+          [](py::handle self, py::dict v) {
+            py::setattr(self, "__noise_model_kwargs", std::move(v));
           })
       .def("is_visual_sensor_spec", &SensorSpec::isVisualSensorSpec)
       .def("__eq__", &SensorSpec::operator==)
@@ -105,7 +110,11 @@ void initSensorBindings(py::module& m) {
       .def_readwrite("resolution", &VisualSensorSpec::resolution)
       .def_readwrite("gpu2gpu_transfer", &VisualSensorSpec::gpu2gpuTransfer)
       .def_readwrite("channels", &VisualSensorSpec::channels)
-      .def_readwrite("clear_color", &CameraSensorSpec::clearColor);
+      .def_readwrite(
+          "semantic_target", &VisualSensorSpec::semanticTarget,
+          R"(The type of information rendered by the semantic sensor. If this sensor is not semantic,
+            this is ignored. Acceptable values : [SEMANTIC_ID(default), OBJECT_ID])")
+      .def_readwrite("clear_color", &VisualSensorSpec::clearColor);
 
   // ====CameraSensorSpec ====
   py::class_<CameraSensorSpec, CameraSensorSpec::ptr, VisualSensorSpec>(
@@ -154,11 +163,17 @@ void initSensorBindings(py::module& m) {
       .def_readwrite("alpha", &FisheyeSensorDoubleSphereSpec::alpha)
       .def_readwrite("xi", &FisheyeSensorDoubleSphereSpec::xi);
 
-  // ==== SensorFactory ====
-  py::class_<SensorFactory>(m, "SensorFactory")
-      .def("create_sensors", &SensorFactory::createSensors)
-      .def("delete_sensor", &SensorFactory::deleteSensor)
-      .def("delete_subtree_sensor", &SensorFactory::deleteSubtreeSensor);
+  // ==== Sensor ====
+  py::class_<Sensor, Magnum::SceneGraph::PyFeature<Sensor>,
+             Magnum::SceneGraph::AbstractFeature3D,
+             Magnum::SceneGraph::PyFeatureHolder<Sensor>>(m, "Sensor")
+      .def("specification", &Sensor::specification)
+      .def("set_transformation_from_spec", &Sensor::setTransformationFromSpec)
+      .def("is_visual_sensor", &Sensor::isVisualSensor)
+      .def("get_observation", &Sensor::getObservation)
+      .def_property_readonly("node", nodeGetter<Sensor>,
+                             "Node this object is attached to")
+      .def_property_readonly("object", nodeGetter<Sensor>, "Alias to node");
 
   // ==== SensorSuite ====
   py::class_<SensorSuite, Magnum::SceneGraph::PyFeature<SensorSuite>,
@@ -176,17 +191,11 @@ void initSensorBindings(py::module& m) {
                              "Node this object is attached to")
       .def_property_readonly("object", nodeGetter<Sensor>, "Alias to node");
 
-  // ==== Sensor ====
-  py::class_<Sensor, Magnum::SceneGraph::PyFeature<Sensor>,
-             Magnum::SceneGraph::AbstractFeature3D,
-             Magnum::SceneGraph::PyFeatureHolder<Sensor>>(m, "Sensor")
-      .def("specification", &Sensor::specification)
-      .def("set_transformation_from_spec", &Sensor::setTransformationFromSpec)
-      .def("is_visual_sensor", &Sensor::isVisualSensor)
-      .def("get_observation", &Sensor::getObservation)
-      .def_property_readonly("node", nodeGetter<Sensor>,
-                             "Node this object is attached to")
-      .def_property_readonly("object", nodeGetter<Sensor>, "Alias to node");
+  // ==== SensorFactory ====
+  py::class_<SensorFactory>(m, "SensorFactory")
+      .def("create_sensors", &SensorFactory::createSensors)
+      .def("delete_sensor", &SensorFactory::deleteSensor)
+      .def("delete_subtree_sensor", &SensorFactory::deleteSubtreeSensor);
 
   // ==== VisualSensor ====
   py::class_<VisualSensor, Magnum::SceneGraph::PyFeature<VisualSensor>, Sensor,

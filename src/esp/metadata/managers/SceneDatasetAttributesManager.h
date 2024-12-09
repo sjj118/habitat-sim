@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -7,22 +7,22 @@
 
 #include <utility>
 
+#include "PbrShaderAttributesManager.h"
 #include "PhysicsAttributesManager.h"
 
-#include "AttributesManagerBase.h"
+#include "AbstractAttributesManager.h"
 #include "esp/metadata/attributes/SceneDatasetAttributes.h"
 
 namespace esp {
 namespace metadata {
 namespace managers {
-using esp::core::managedContainers::ManagedObjectAccess;
-
 class SceneDatasetAttributesManager
-    : public AttributesManager<attributes::SceneDatasetAttributes,
-                               ManagedObjectAccess::Share> {
+    : public AbstractAttributesManager<attributes::SceneDatasetAttributes,
+                                       ManagedObjectAccess::Share> {
  public:
   explicit SceneDatasetAttributesManager(
-      PhysicsAttributesManager::ptr physicsAttributesMgr);
+      PhysicsAttributesManager::ptr physicsAttributesMgr,
+      PbrShaderAttributesManager::ptr pbrShaderAttributesMgr);
   /**
    * @brief Creates an instance of a dataset template described by passed
    * string. For dataset templates, this a file name.
@@ -67,31 +67,65 @@ class SceneDatasetAttributesManager
    */
   void setCurrPhysicsManagerAttributesHandle(const std::string& handle) {
     physicsManagerAttributesHandle_ = handle;
-    for (const auto& val : this->objectLibrary_) {
-      this->getObjectByHandle(val.first)->setPhysicsManagerHandle(handle);
+    auto objIterPair = this->getObjectLibIterator();
+    for (auto& objIter = objIterPair.first; objIter != objIterPair.second;
+         ++objIter) {
+      this->getObjectByHandle(objIter->first)->setPhysicsManagerHandle(handle);
     }
   }  // SceneDatasetAttributesManager::setCurrPhysicsManagerAttributesHandle
 
+  /**
+   * @brief This will set the current default PBR/IBL Shader configuration
+   * attributes. This is used so that upon creation of new
+   * @ref esp::metadata::attributes::SceneDatasetAttributes, the default @ref
+   * esp::metadata::attributes::PbrShaderAttributes can be set in the
+   * @ref esp::metadata::attributes::SceneDatasetAttributes before any
+   * scene-specific values are set.
+   *
+   * @param pbrHandle The string handle referencing the @ref
+   * esp::metadata::attributes::PbrShaderAttributes used to configure the
+   * current PBR/IBL shader for all objects, unless overridden in Scene
+   * Instances.
+   */
+  void setDefaultPbrShaderAttributesHandle(const std::string& pbrHandle) {
+    defaultPbrShaderAttributesHandle_ = pbrHandle;
+    auto objIterPair = this->getObjectLibIterator();
+    for (auto& objIter = objIterPair.first; objIter != objIterPair.second;
+         ++objIter) {
+      this->getObjectByHandle(objIter->first)
+          ->setDefaultPbrShaderAttrHandle(pbrHandle);
+    }
+  }  // SceneDatasetAttributesManager::setDefaultPbrShaderAttributesHandle
+
+  /**
+   * @brief This function will be called to finalize attributes' paths before
+   * registration, moving fully qualified paths to the appropriate hidden
+   * attribute fields. This can also be called without registration to make sure
+   * the paths specified in an attributes are properly configured.
+   * @param attributes The attributes to be filtered.
+   */
+  void finalizeAttrPathsBeforeRegister(
+      CORRADE_UNUSED const attributes::SceneDatasetAttributes::ptr& attributes)
+      const override {}
+
  protected:
   /**
-   * @brief This will load a dataset map with file location values from the
-   * dataset config.  It will also attempt to either verify those locations are
-   * valid files, or else prefix the given location with the dataset root
-   * directory.
+   * @brief This will validate a loaded dataset map with file location values
+   * from the dataset config, by attempting to either verify those
+   * locations are valid files, or else prefix the given location with the
+   * dataset root directory.
    * @param dsDir the dataset's root directory
    * @param jsonTag the appropriate tag for the map being read
-   * @param jsonConfig the json configuration file being read
    * @param map A ref to the dataset's map that is being populated.
    */
-  void loadAndValidateMap(const std::string& dsDir,
-                          const std::string& jsonTag,
-                          const io::JsonGenericValue& jsonConfig,
-                          std::map<std::string, std::string>& map);
+  void validateMap(const std::string& dsDir,
+                   const std::string& jsonTag,
+                   std::map<std::string, std::string>& map);
 
   /**
    * @brief Verify a particular subcell exists within the
    * dataset_config.JSON file, and if so, handle reading the possible JSON
-   * sub-cells it might hold, using the passed attributesManager for the
+   * sub-cells it might hold, using the passed AbstractAttributesManager for the
    * dataset being processed.
    * @tparam the type of the attributes manager.
    * @param dsDir The root directory of the dataset attributes being built.
@@ -102,10 +136,12 @@ class SceneDatasetAttributesManager
    * @param attrMgr The dataset's attributes manager for @p tag 's data.
    */
   template <typename U>
-  void readDatasetJSONCell(const std::string& dsDir,
-                           const char* tag,
-                           const io::JsonGenericValue& jsonConfig,
-                           const U& attrMgr);
+  void readDatasetJSONCell(
+      const std::string& dsDir,
+      const char* tag,
+      const io::JsonGenericValue& jsonConfig,
+      const U& attrMgr,
+      std::map<std::string, std::string>* strKeyMap = nullptr);
 
   /**
    * @brief This will parse an individual element in a "configs" cell array in
@@ -141,10 +177,10 @@ class SceneDatasetAttributesManager
 
   /**
    * @brief This method will perform any necessary updating that is
-   * attributesManager-specific upon template removal, such as removing a
-   * specific template handle from the list of file-based template handles in
+   * AbstractAttributesManager-specific upon template removal, such as removing
+   * a specific template handle from the list of file-based template handles in
    * ObjectAttributesManager.  This should only be called @ref
-   * esp::core::ManagedContainerBase.
+   * esp::core::managedContainers::ManagedContainerBase.
    *
    * @param templateID the ID of the template to remove
    * @param templateHandle the string key of the attributes desired.
@@ -161,32 +197,42 @@ class SceneDatasetAttributesManager
   void resetFinalize() override {}
 
   /**
-   * @brief Add a @ref std::shared_ptr<attributesType> object to the
-   * @ref objectLibrary_.  Verify that render and collision handles have been
-   * set properly.  We are doing this since these values can be modified by the
-   * user.
+   * @brief Not required for this manager.
    *
-   * @param SceneDatasetAttributes The attributes template.
-   * @param SceneDatasetAttributesHandle The key for referencing the template in
-   * the @ref objectLibrary_.
-   * @param forceRegistration Will register object even if conditional
+   * This method will perform any essential updating to the managed object
+   * before registration is performed. If this updating fails, registration will
+   * also fail.
+   * @param object the managed object to be registered
+   * @param objectHandle the name to register the managed object with.
+   * Expected to be valid.
+   * @param forceRegistration Should register object even if conditional
    * registration checks fail.
-   * @return The index in the @ref objectLibrary_ of the registered template.
+   * @return Whether the preregistration has succeeded and what handle to use to
+   * register the object if it has.
    */
-  int registerObjectFinalize(
-      attributes::SceneDatasetAttributes::ptr SceneDatasetAttributes,
-      const std::string& SceneDatasetAttributesHandle,
-      CORRADE_UNUSED bool forceRegistration) override;
+  core::managedContainers::ManagedObjectPreregistration
+  preRegisterObjectFinalize(
+      CORRADE_UNUSED attributes::SceneDatasetAttributes::ptr object,
+      CORRADE_UNUSED const std::string& objectHandle,
+      CORRADE_UNUSED bool forceRegistration) override {
+    // No pre-registration conditioning performed
+    return core::managedContainers::ManagedObjectPreregistration::Success;
+  }
 
   /**
-   * @brief This function is meaningless for this manager's ManagedObjects.
-   * @param handle Ignored.
-   * @return false
+   * @brief Not required for this manager.
+   *
+   * This method will perform any final manager-related handling after
+   * successfully registering an object.
+   *
+   * See @ref esp::attributes::managers::ObjectAttributesManager for an example.
+   *
+   * @param objectID the ID of the successfully registered managed object
+   * @param objectHandle The name of the managed object
    */
-  bool isValidPrimitiveAttributes(
-      CORRADE_UNUSED const std::string& handle) override {
-    return false;
-  }
+  void postRegisterObjectHandling(
+      CORRADE_UNUSED int objectID,
+      CORRADE_UNUSED const std::string& objectHandle) override {}
 
   /**
    * @brief Name of currently used physicsManagerAttributes
@@ -194,12 +240,22 @@ class SceneDatasetAttributesManager
   std::string physicsManagerAttributesHandle_ = "";
 
   /**
+   * @brief Name of currently used default PbrShaderAttributes
+   */
+  std::string defaultPbrShaderAttributesHandle_ = "";
+  /**
    * @brief Reference to PhysicsAttributesManager to give access to default
    * physics manager attributes settings when
    * esp::metadata::attributes::SceneDatasetAttributes are created within
    * Dataset.
    */
   PhysicsAttributesManager::ptr physicsAttributesManager_ = nullptr;
+
+  /**
+   * @brief Reference to the PbrShaderAttributesManager to give access to
+   * various PBR/IBL Shader configuration parameters and settings.
+   */
+  PbrShaderAttributesManager::ptr pbrShaderAttributesManager_ = nullptr;
 
  public:
   ESP_SMART_POINTERS(SceneDatasetAttributesManager)

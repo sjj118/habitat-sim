@@ -1,5 +1,5 @@
 
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -8,14 +8,20 @@
 #include <Magnum/Magnum.h>
 #include <Magnum/PythonBindings.h>
 
+#include "esp/metadata/attributes/AbstractObjectAttributes.h"
 #include "esp/metadata/attributes/LightLayoutAttributes.h"
 #include "esp/metadata/attributes/ObjectAttributes.h"
+#include "esp/metadata/attributes/SemanticAttributes.h"
+#include "esp/metadata/attributes/StageAttributes.h"
 
+#include "esp/metadata/managers/AOAttributesManager.h"
+#include "esp/metadata/managers/AbstractAttributesManager.h"
 #include "esp/metadata/managers/AssetAttributesManager.h"
-#include "esp/metadata/managers/AttributesManagerBase.h"
 #include "esp/metadata/managers/LightLayoutAttributesManager.h"
 #include "esp/metadata/managers/ObjectAttributesManager.h"
+#include "esp/metadata/managers/PbrShaderAttributesManager.h"
 #include "esp/metadata/managers/PhysicsAttributesManager.h"
+#include "esp/metadata/managers/SemanticAttributesManager.h"
 #include "esp/metadata/managers/StageAttributesManager.h"
 
 namespace py = pybind11;
@@ -24,9 +30,12 @@ namespace Attrs = esp::metadata::attributes;
 using Attrs::AbstractAttributes;
 using Attrs::AbstractObjectAttributes;
 using Attrs::AbstractPrimitiveAttributes;
+using Attrs::ArticulatedObjectAttributes;
 using Attrs::LightLayoutAttributes;
 using Attrs::ObjectAttributes;
+using Attrs::PbrShaderAttributes;
 using Attrs::PhysicsManagerAttributes;
+using Attrs::SemanticAttributes;
 using Attrs::StageAttributes;
 using esp::core::managedContainers::ManagedObjectAccess;
 
@@ -47,13 +56,14 @@ template <class T, ManagedObjectAccess Access>
 void declareBaseAttributesManager(py::module& m,
                                   const std::string& attrType,
                                   const std::string& classStrPrefix) {
-  using MgrClass = AttributesManager<T, Access>;
+  using MgrClass = AbstractAttributesManager<T, Access>;
   using AttribsPtr = std::shared_ptr<T>;
   // Most, but not all, of these methods are from ManagedContainer class
-  // template.  However, we use AttributesManager as the base class because we
-  // wish to have appropriate (attributes-related) argument nomenclature and
-  // documentation.
-  std::string pyclass_name = classStrPrefix + std::string("AttributesManager");
+  // template.  However, we use AbstractAttributesManager as the base class
+  // because we wish to have appropriate (attributes-related) argument
+  // nomenclature and documentation.
+  std::string pyclass_name =
+      classStrPrefix + std::string("AbstractAttributesManager");
   py::class_<MgrClass, std::shared_ptr<MgrClass>>(m, pyclass_name.c_str())
       .def("get_template_handle_by_id", &MgrClass::getObjectHandleByID,
            ("Returns string handle for the " + attrType +
@@ -231,6 +241,14 @@ void declareBaseAttributesManager(py::module& m,
             "if it does not.")
                .c_str(),
            "handle"_a)
+      .def("get_first_matching_template_by_handle",
+           static_cast<AttribsPtr (MgrClass::*)(const std::string&)>(
+               &MgrClass::getFirstMatchingObjectOrCopyByHandle),
+           ("This returns a copy of the first " + attrType +
+            " template containing the passed handle substring if any exist, "
+            "and NULL if none could be found.")
+               .c_str(),
+           "handle_substr"_a)
       .def("get_templates_by_handle_substring",
            static_cast<std::unordered_map<std::string, AttribsPtr> (
                MgrClass::*)(const std::string&, bool)>(
@@ -240,7 +258,58 @@ void declareBaseAttributesManager(py::module& m,
             "contain or explicitly do not contain the passed search_str, based "
             "on the value of boolean contains.")
                .c_str(),
-           "search_str"_a = "", "contains"_a = true);
+           "search_str"_a = "", "contains"_a = true)
+      .def("filter_filepaths", &MgrClass::finalizeAttrPathsBeforeRegister,
+           ("This attempts to filter any filenames in the passed " + attrType +
+            " template so that the fields that would be saved to file would "
+            "only contain relative paths.")
+               .c_str(),
+           "attributes"_a)
+      .def("save_template_by_handle",
+           static_cast<bool (MgrClass::*)(const std::string&, bool) const>(
+               &MgrClass::saveManagedObjectToFile),
+           ("Saves the " + attrType +
+            " template referenced by the passed handle to its source location "
+            "if overwrite is true, will create a new incremented filename if  "
+            "overwrite is false. Returns whether was successful or not.")
+               .c_str(),
+           "handle"_a, "overwrite"_a)
+      .def(
+          "save_template_by_handle_to_filepath",
+          static_cast<bool (MgrClass::*)(const std::string&, const std::string&)
+                          const>(&MgrClass::saveManagedObjectToFile),
+          ("Saves the " + attrType +
+           " template referenced by the passed handle to the passed path, "
+           "creating subdirectories if they do not exist. Returns whether was "
+           "successful or not.")
+              .c_str(),
+          "handle"_a, "filepath"_a)
+      .def("save_template_to_filepath",
+           static_cast<bool (MgrClass::*)(const AttribsPtr&, const std::string&,
+                                          bool) const>(
+               &MgrClass::saveManagedObjectToFile),
+           ("Saves the passed " + attrType +
+            " template to the passed filepath. If only a filename is passed, "
+            "it will save this template in its original source directory, "
+            "otherwise if path + filename is passed it will save the template "
+            "to the specified filepath, creating any necessary subdirectories "
+            "only if create_subdir is true. If create_subdir is false, it will "
+            "fail with a message if any subdirectories in the requested "
+            "filepath do not exist.")
+               .c_str(),
+           "handle"_a, "filepath"_a, "create_subdir"_a)
+      .def("save_template_to_filepath",
+           static_cast<bool (MgrClass::*)(const AttribsPtr&, const std::string&,
+                                          const std::string&, bool) const>(
+               &MgrClass::saveManagedObjectToFile),
+           ("Saves the passed " + attrType +
+            " template to the passed filepath + filename, creating any "
+            "necessary subdirectories only if create_subdir is true. If "
+            "create_subdir is false, it will fail with a message if any "
+            "subdirectories in the requested filepath "
+            "subdirectories do not exist.")
+               .c_str(),
+           "handle"_a, "filepath"_a, "filename"_a, "create_subdir"_a);
 }  // declareBaseAttributesManager
 
 void initAttributesManagersBindings(py::module& m) {
@@ -264,10 +333,12 @@ void initAttributesManagersBindings(py::module& m) {
   declareBaseAttributesManager<AbstractPrimitiveAttributes,
                                ManagedObjectAccess::Copy>(m, "Primitive Asset",
                                                           "BaseAsset");
-  py::class_<
-      AssetAttributesManager,
-      AttributesManager<AbstractPrimitiveAttributes, ManagedObjectAccess::Copy>,
-      AssetAttributesManager::ptr>(m, "AssetAttributesManager")
+  py::class_<AssetAttributesManager,
+             AbstractAttributesManager<AbstractPrimitiveAttributes,
+                                       ManagedObjectAccess::Copy>,
+             AssetAttributesManager::ptr>(
+      m, "AssetAttributesManager",
+      R"(Manages PrimtiveAttributes objects which define parameters for constructing primitive mesh shapes such as cubes, capsules, cylinders, and cones.)")
       // AssetAttributesMangaer-specific bindings
       // return appropriately cast capsule templates
       .def("get_default_capsule_template",
@@ -347,20 +418,40 @@ void initAttributesManagersBindings(py::module& m) {
 
   // ==== Light Layout Attributes Template manager ====
   declareBaseAttributesManager<LightLayoutAttributes,
-                               ManagedObjectAccess::Copy>(m, "LightLayout",
-                                                          "BaseLightLayout");
+                               ManagedObjectAccess::Copy>(
+      m, "LightLayoutAttributes", "BaseLightLayout");
   // NOLINTNEXTLINE(bugprone-unused-raii)
-  py::class_<
-      LightLayoutAttributesManager,
-      AttributesManager<LightLayoutAttributes, ManagedObjectAccess::Copy>,
-      LightLayoutAttributesManager::ptr>(m, "LightLayoutAttributesManager");
+  py::class_<LightLayoutAttributesManager,
+             AbstractAttributesManager<LightLayoutAttributes,
+                                       ManagedObjectAccess::Copy>,
+             LightLayoutAttributesManager::ptr>(m,
+                                                "LightLayoutAttributesManager");
+
+  // ==== Articulated Object Attributes Template manager ====
+  declareBaseAttributesManager<ArticulatedObjectAttributes,
+                               ManagedObjectAccess::Copy>(
+      m, "ArticulatedObjectAttributes", "BaseArticulatedObject");
+  // NOLINTNEXTLINE(bugprone-unused-raii)
+  py::class_<AOAttributesManager,
+             AbstractAttributesManager<ArticulatedObjectAttributes,
+                                       ManagedObjectAccess::Copy>,
+             AOAttributesManager::ptr>(
+      m, "AOAttributesManager",
+      R"(Manages ArticulatedObjectAttributes which define Habitat-specific metadata for articulated objects
+      (i.e. render asset or semantic ID), in addition to data held in defining URDF file, pre-instantiation.
+      Can import .ao_config.json files.)");
+
   // ==== Object Attributes Template manager ====
   declareBaseAttributesManager<ObjectAttributes, ManagedObjectAccess::Copy>(
       m, "ObjectAttributes", "BaseObject");
   // NOLINTNEXTLINE(bugprone-unused-raii)
-  py::class_<ObjectAttributesManager,
-             AttributesManager<ObjectAttributes, ManagedObjectAccess::Copy>,
-             ObjectAttributesManager::ptr>(m, "ObjectAttributesManager")
+  py::class_<
+      ObjectAttributesManager,
+      AbstractAttributesManager<ObjectAttributes, ManagedObjectAccess::Copy>,
+      ObjectAttributesManager::ptr>(
+      m, "ObjectAttributesManager",
+      R"(Manages ObjectAttributes which define metadata for rigid objects pre-instantiation.
+      Can import .object_config.json files.)")
 
       // ObjectAttributesManager-specific bindings
       .def("load_object_configs",
@@ -410,24 +501,55 @@ void initAttributesManagersBindings(py::module& m) {
            R"(Returns the handle for a random synthesized(primitive asset)-based
           template chosen from the existing ObjectAttributes templates being managed.)");
 
-  // ==== Stage Attributes Template manager ====
-  declareBaseAttributesManager<StageAttributes, ManagedObjectAccess::Copy>(
-      m, "StageAttributes", "BaseStage");
-  // NOLINTNEXTLINE(bugprone-unused-raii)
-  py::class_<StageAttributesManager,
-             AttributesManager<StageAttributes, ManagedObjectAccess::Copy>,
-             StageAttributesManager::ptr>(m, "StageAttributesManager");
-
   // ==== Physics World/Manager Template manager ====
 
   declareBaseAttributesManager<PhysicsManagerAttributes,
                                ManagedObjectAccess::Copy>(
       m, "PhysicsAttributes", "BasePhysics");
   // NOLINTNEXTLINE(bugprone-unused-raii)
+  py::class_<PhysicsAttributesManager,
+             AbstractAttributesManager<PhysicsManagerAttributes,
+                                       ManagedObjectAccess::Copy>,
+             PhysicsAttributesManager::ptr>(
+      m, "PhysicsAttributesManager",
+      R"(Manages PhysicsManagerAttributes which define global Simulation parameters
+      such as timestep. Can import .physics_config.json files.)");
+
+  // ==== Pbr Shader configuration Template manager ====
+  declareBaseAttributesManager<PbrShaderAttributes, ManagedObjectAccess::Copy>(
+      m, "PbrShaderAttributes", "BasePbrConfig");
+  // NOLINTNEXTLINE(bugprone-unused-raii)
   py::class_<
-      PhysicsAttributesManager,
-      AttributesManager<PhysicsManagerAttributes, ManagedObjectAccess::Copy>,
-      PhysicsAttributesManager::ptr>(m, "PhysicsAttributesManager");
+      PbrShaderAttributesManager,
+      AbstractAttributesManager<PbrShaderAttributes, ManagedObjectAccess::Copy>,
+      PbrShaderAttributesManager::ptr>(
+      m, "PbrShaderAttributesManager",
+      R"(Manages PbrShaderAttributes which define PBR shader calculation control values, such as
+      enabling IBL or specifying direct and indirect lighting balance. Can import .pbr_config.json files.)");
+
+  // ==== Semantic Attributes Template manager ====
+  declareBaseAttributesManager<SemanticAttributes, ManagedObjectAccess::Copy>(
+      m, "SemanticAttributes", "BaseSemantic");
+  // NOLINTNEXTLINE(bugprone-unused-raii)
+  py::class_<
+      SemanticAttributesManager,
+      AbstractAttributesManager<SemanticAttributes, ManagedObjectAccess::Copy>,
+      SemanticAttributesManager::ptr>(
+      m, "SemanticAttributesManager",
+      R"(Manages SemanticAttributes which define semantic mappings and files applicable to a scene instance,
+      such as semantic screen descriptor files and semantic regions. Can import .semantic_config.json files.)");
+
+  // ==== Stage Attributes Template manager ====
+  declareBaseAttributesManager<StageAttributes, ManagedObjectAccess::Copy>(
+      m, "StageAttributes", "BaseStage");
+  // NOLINTNEXTLINE(bugprone-unused-raii)
+  py::class_<
+      StageAttributesManager,
+      AbstractAttributesManager<StageAttributes, ManagedObjectAccess::Copy>,
+      StageAttributesManager::ptr>(
+      m, "StageAttributesManager",
+      R"(Manages StageAttributes which define metadata for stages (i.e. static background mesh such
+      as architectural elements) pre-instantiation. Can import .stage_config.json files.)");
 
 }  // initAttributesManagersBindings
 }  // namespace managers

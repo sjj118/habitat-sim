@@ -1,14 +1,9 @@
 # ---
 # jupyter:
 #   accelerator: GPU
-#   colab:
-#     collapsed_sections: []
-#     name: Habitat-sim Asset Viewer
-#     private_outputs: true
-#     provenance: []
 #   jupytext:
 #     cell_metadata_filter: -all
-#     formats: nb_python//py:percent,colabs//ipynb
+#     formats: nb_python//py:percent,notebooks//ipynb
 #     notebook_metadata_filter: all
 #     text_representation:
 #       extension: .py
@@ -16,12 +11,20 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.13.7
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3 (ipykernel)
+#     language: python
 #     name: python3
+#   language_info:
+#     codemirror_mode:
+#       name: ipython
+#       version: 3
+#     file_extension: .py
+#     mimetype: text/x-python
+#     name: python
+#     nbconvert_exporter: python
+#     pygments_lexer: ipython3
+#     version: 3.9.17
 # ---
-
-# %% [markdown]
-# <a href="https://colab.research.google.com/github/facebookresearch/habitat-sim/blob/main/examples/tutorials/colabs/asset_viewer.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 # %% [markdown]
 # #Habitat-sim Asset Viewer
@@ -30,25 +33,19 @@
 #
 
 # %%
-# @title Installation { display-mode: "form" }
-# @markdown (double click to show code).
-
-# !curl -L https://raw.githubusercontent.com/facebookresearch/habitat-sim/main/examples/colab_utils/colab_install.sh | NIGHTLY=true bash -s
-
-# %%
 # @title Path Setup and Imports { display-mode: "form" }
 # @markdown (double click to show code).
 
-# %cd /content/habitat-sim
 ## [setup]
 import math
 import os
-import sys
 
 import git
+import magnum as mn
 import numpy as np
 
 import habitat_sim
+from habitat_sim.bindings import built_with_bullet
 from habitat_sim.utils import common as ut
 from habitat_sim.utils import viz_utils as vut
 
@@ -62,20 +59,14 @@ try:
 except ImportError:
     HAS_WIDGETS = False
 
-
-if "google.colab" in sys.modules:
-    os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
-
 repo = git.Repo(".", search_parent_directories=True)
 dir_path = repo.working_tree_dir
-# %cd $dir_path
 data_path = os.path.join(dir_path, "data")
 # fmt: off
 output_directory = "examples/tutorials/asset_viewer_output/"  # @param {type:"string"}
 # fmt: on
 output_path = os.path.join(dir_path, output_directory)
-if not os.path.exists(output_path):
-    os.mkdir(output_path)
+os.makedirs(output_path, exist_ok=True)
 
 # define some globals the first time we run.
 if "sim" not in globals():
@@ -186,7 +177,7 @@ def make_cfg(settings):
             settings["sensor_height"] + 0.2,
             0.2,
         ]
-        color_sensor_3rd_person_spec.orientation = [-math.pi / 4, 0, 0]
+        color_sensor_3rd_person_spec.orientation = [-math.pi / 4, 0.0, 0.0]
         color_sensor_3rd_person_spec.sensor_subtype = habitat_sim.SensorSubType.PINHOLE
         sensor_specs.append(color_sensor_3rd_person_spec)
 
@@ -201,7 +192,9 @@ def make_default_settings():
     settings = {
         "width": 1280,  # Spatial resolution of the observations
         "height": 720,
-        "scene": "./data/scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb",  # Scene path
+        "scene": os.path.join(
+            data_path, "scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb"
+        ),  # Scene path
         "default_agent": 0,
         "sensor_height": 1.5,  # Height of sensors in meters
         "sensor_pitch": -math.pi / 8.0,  # sensor pitch (x rotation in rads)
@@ -210,7 +203,7 @@ def make_default_settings():
         "depth_sensor_1st_person": False,  # Depth sensor
         "semantic_sensor_1st_person": False,  # Semantic sensor
         "seed": 1,
-        "enable_physics": True,  # enable dynamics simulation
+        "enable_physics": built_with_bullet,  # enable dynamics simulation if bullet is present
     }
     return settings
 
@@ -260,6 +253,7 @@ def make_simulator_from_settings(sim_settings):
 # @markdown (double click to show code)
 
 # @markdown This cell defines utility functions that expose Attribute template object properties.
+
 
 # This method builds a dictionary of k-v pairs of attribute property names and
 # values shared by all attribute template types.  The values are tuples with the
@@ -311,8 +305,8 @@ def build_dict_of_PhyObj_attrs(phys_obj_template):
         "boolean",
     )
     res_dict["shader_type"] = (phys_obj_template.shader_type, True, "int")
-    res_dict["orient_up"] = (phys_obj_template.orient_up, True, "vector")
-    res_dict["orient_front"] = (phys_obj_template.orient_front, True, "vector")
+    res_dict["up"] = (phys_obj_template.orient_up, True, "vector")
+    res_dict["front"] = (phys_obj_template.orient_front, True, "vector")
     res_dict["units_to_meters"] = (phys_obj_template.units_to_meters, True, "double")
     res_dict["render_asset_type"] = (phys_obj_template.render_asset_type, True, "int")
     res_dict["collision_asset_type"] = (
@@ -337,7 +331,11 @@ def build_dict_of_PhyObj_attrs(phys_obj_template):
         "boolean",
     )
     res_dict["is_collidable"] = (phys_obj_template.is_collidable, True, "boolean")
-    res_dict["is_dirty"] = (phys_obj_template.is_dirty, False, "boolean")
+    res_dict["filenames_are_dirty"] = (
+        phys_obj_template.filenames_are_dirty,
+        False,
+        "boolean",
+    )
     return res_dict
 
 
@@ -552,6 +550,7 @@ def show_template_properties(template):
 # @title Define Simulation Utility Functions { display-mode: "form" }
 # @markdown (double click to show code)
 
+
 # @markdown - simulate
 def simulate(sim, dt=1.0, get_frames=True):
     # simulate dt seconds at 60Hz to the nearest fixed timestep
@@ -566,10 +565,11 @@ def simulate(sim, dt=1.0, get_frames=True):
 
 
 # %%
-# @title Define Colab GUI Utility Functions { display-mode: "form" }
+# @title Define GUI Utility Functions { display-mode: "form" }
 # @markdown (double click to show code)
 
 # @markdown This cell provides utility functions to build and manage IPyWidget interactive components.
+
 
 # Event handler for dropdowns displaying file-based object handles
 def on_file_obj_ddl_change(ddl_values):
@@ -725,7 +725,7 @@ else:
 
 sim_settings = make_default_settings()
 sim_settings["scene"] = "none"
-sim_settings["sensor_pitch"] = 0
+sim_settings["sensor_pitch"] = 0.0
 sim_settings["override_scene_light_defaults"] = True
 sim_settings["scene_light_setup"] = ""
 
@@ -740,7 +740,7 @@ make_simulator_from_settings(sim_settings)
 # @markdown and then load it below by setting object_to_view_path
 # @markdown Put the full path to the asset you would like to view here :
 # fmt: off
-object_to_view_path = "./data/test_assets/scenes/simple_room.glb"  # @param {type:"string"}
+object_to_view_path = os.path.join(data_path, "test_assets/scenes/simple_room.glb")  # @param {type:"string"}
 # fmt: on
 
 # this is the name to save the resultant video with
@@ -761,7 +761,6 @@ clip_short_name = object_to_view_path.split("/")[-1].split(".")[0]
 
 # check if desired object actually exists
 if os.path.exists(object_to_view_path) and os.path.isfile(object_to_view_path):
-
     # Acquire the sensor being used
     visual_sensor = sim._sensors["color_sensor_3rd_person"]
     initial_sensor_position = np.array(visual_sensor._spec.position)
@@ -785,32 +784,32 @@ if os.path.exists(object_to_view_path) and os.path.isfile(object_to_view_path):
     obj = rigid_obj_mgr.add_object_by_template_id(obj_temp_id)
     # place object in center - must be done before setting to static
     # get bb of object
-    obj_bbox = obj.root_scene_node.compute_cumulative_bb()
+    obj_bbox = obj.aabb
     # find center of bb and move to scene origin - this centers object
     obj.translation = -obj_bbox.center()
     # get max dim to use as scale for sensor placement
     bb_scale = max(obj_bbox.max)
     # determine sensor placement based on size of object
-    sensor_pos = bb_scale * np.array([0, 1, 2])
+    sensor_pos = bb_scale * mn.Vector3(0.0, 1.0, 2.0)
     # set object to be static
     obj.motion_type = habitat_sim.physics.MotionType.STATIC
 
-    # initialize an agent and set its intial state
+    # initialize an agent and set its initial state
     agent = sim.initialize_agent(sim_settings["default_agent"])
     agent_state = habitat_sim.AgentState()
-    agent_state.position = np.array([0.0, 0.0, 0.0])  # in world space
+    agent_state.position = mn.Vector3(0.0, 0.0, 0.0)  # in world space
     agent.set_state(agent_state)
 
     # set the sensor to be behind and above the agent's initial loc
     # distance is scaled by size of largest object dimension
     visual_sensor._spec.position = agent_state.position + sensor_pos
-    visual_sensor._spec.orientation = np.array([-0.5, 0, 0])
+    visual_sensor._spec.orientation = mn.Vector3(-0.5, 0.0, 0.0)
     visual_sensor._sensor_object.set_transformation_from_spec()
 
     # Create observations array
     observations = []
 
-    # @markdown Set how long the resutlant video should be, in seconds.  The object will make 1 full revolution during this time.
+    # @markdown Set how long the resultant video should be, in seconds.  The object will make 1 full revolution during this time.
     video_length = 4.8  # @param {type:"slider", min:1.0, max:20.0, step:0.1}
     # Sim time step
     time_step = 1.0 / 60.0
@@ -823,7 +822,7 @@ if os.path.exists(object_to_view_path) and os.path.isfile(object_to_view_path):
         sim.step_physics(time_step)
         # rotate the agent to rotate the camera
         agent_state.rotation *= ut.quat_from_angle_axis(
-            rot_amount, np.array([0, 1.0, 0])
+            rot_amount, np.array([0.0, 1.0, 0.0])
         )
         agent.set_state(agent_state)
 
@@ -855,4 +854,3 @@ else:
         )
     )
 # [/build_carousel_view]
-# %%

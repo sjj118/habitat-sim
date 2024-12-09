@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -46,15 +46,15 @@ struct childParentIndex {
 /**
  * @brief Structure to hold construction time multi-body data.
  */
-struct URDF2BulletCached {
-  URDF2BulletCached() = default;
-  // these arrays will be initialized in the 'initURDF2BulletCache'
+struct URDFToBulletCached {
+  URDFToBulletCached() = default;
+  // these arrays will be initialized in the 'initURDFToBulletCache'
 
   std::vector<int> m_urdfLinkParentIndices;
   std::vector<int> m_urdfLinkIndices2BulletLinkIndices;
   std::vector<btTransform> m_urdfLinkLocalInertialFrames;
 
-  int m_currentMultiBodyLinkIndex{-1};
+  int m_currentMultiBodyLinkIndex{BASELINK_ID};
 
   class btMultiBody* m_bulletMultiBody{nullptr};
 
@@ -88,21 +88,21 @@ class BulletURDFImporter : public URDFImporter {
 
   //! Initialize the temporary Bullet cache for multibody construction from the
   //! active URDF::Model
-  void initURDF2BulletCache();
+  void initURDFToBulletCache(
+      const esp::metadata::attributes::ArticulatedObjectAttributes::ptr&
+          artObjAttributes);
 
-  //! Traverse the kinematic chain recursively constructing the btMultiBody
-  Magnum::Matrix4 convertURDF2BulletInternal(
-      int urdfLinkIndex,
+  //! Traverse the kinematic chain constructing the btMultiBody
+  void convertURDFToBullet(
       const Magnum::Matrix4& parentTransformInWorldSpace,
       btMultiBodyDynamicsWorld* world1,
       std::map<int, std::unique_ptr<btCompoundShape>>& linkCompoundShapes,
       std::map<int, std::vector<std::unique_ptr<btCollisionShape>>>&
-          linkChildShapes,
-      bool recursive = false);
+          linkChildShapes);
 
   //! The temporary Bullet multibody cache initialized by
-  //! convertURDF2BulletInternal and cleared after instancing the object
-  std::shared_ptr<URDF2BulletCached> cache = nullptr;
+  //! convertURDFToBulletInternal and cleared after instancing the object
+  std::shared_ptr<URDFToBulletCached> cache = nullptr;
 
   //! Recursively get all indices from the model with mappings between parents
   //! and children
@@ -111,10 +111,20 @@ class BulletURDFImporter : public URDFImporter {
                      std::vector<childParentIndex>& allIndices);
 
  protected:
+  //! Traverse the kinematic chain recursively constructing the btMultiBody
+  Magnum::Matrix4 convertURDFToBulletInternal(
+      int urdfLinkIndex,
+      const Magnum::Matrix4& parentTransformInWorldSpace,
+      btMultiBodyDynamicsWorld* world1,
+      std::map<int, std::unique_ptr<btCompoundShape>>& linkCompoundShapes,
+      std::map<int, std::vector<std::unique_ptr<btCollisionShape>>>&
+          linkChildShapes,
+      bool recursive = false);
+
   //! Construct a set of Bullet collision shapes from the URDF::CollisionShape
   //! metadata
   btCollisionShape* convertURDFToCollisionShape(
-      const struct io::URDF::CollisionShape* collision,
+      const struct metadata::URDF::CollisionShape* collision,
       std::vector<std::unique_ptr<btCollisionShape>>& linkChildShapes);
 
   //! Construct all Bullet collision shapes for a link in the active URDF::Model
@@ -131,13 +141,14 @@ class BulletURDFImporter : public URDFImporter {
   void computeTotalNumberOfJoints(int linkIndex);
 
   //! Compute the new Bullet link indices from the URDF::Model
-  void computeParentIndices(URDF2BulletCached& bulletCache,
+  void computeParentIndices(URDFToBulletCached& bulletCache,
                             int urdfLinkIndex,
                             int urdfParentIndex);
 };
 
-void processContactParameters(const io::URDF::LinkContactInfo& contactInfo,
-                              btCollisionObject* col);
+void processContactParameters(
+    const metadata::URDF::LinkContactInfo& contactInfo,
+    btCollisionObject* col);
 
 }  // namespace physics
 }  // namespace esp

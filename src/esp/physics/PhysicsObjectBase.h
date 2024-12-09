@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -7,8 +7,10 @@
 
 #include <Corrade/Containers/Optional.h>
 #include <Corrade/Containers/Reference.h>
-#include "esp/assets/ResourceManager.h"
 #include "esp/core/RigidState.h"
+#include "esp/gfx/ShaderManager.h"
+#include "esp/metadata/attributes/MarkerSets.h"
+#include "esp/metadata/attributes/SceneInstanceAttributes.h"
 #include "esp/physics/CollisionGroupHelper.h"
 
 /** @file
@@ -18,11 +20,14 @@
  */
 
 namespace esp {
+namespace assets {
+class ResourceManager;
+}
 
 namespace physics {
 
 /**
- * @brief Motion type of a @ref RigidObject.
+ * @brief Motion type of a @ref esp::physics::RigidObject.
  * Defines its treatment by the simulator and operations which can be performed
  * on it.
  */
@@ -36,13 +41,13 @@ enum class MotionType {
   /**
    * The object is not expected to move and should not allow kinematic updates.
    * Likely treated as static collision geometry. See @ref
-   * RigidObjectType::SCENE.
+   * esp::physics::RigidStage.
    */
   STATIC,
 
   /**
    * The object is expected to move kinematically, but is not simulated. Default
-   * behavior of @ref RigidObject with no physics simulator defined.
+   * behavior of @ref esp::physics::RigidObject with no physics simulator defined.
    */
   KINEMATIC,
 
@@ -63,7 +68,9 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
       : Magnum::SceneGraph::AbstractFeature3D(*bodyNode),
         objectId_(objectId),
         resMgr_(resMgr),
-        userAttributes_(std::make_shared<core::config::Configuration>()) {}
+        userAttributes_(std::make_shared<core::config::Configuration>()) {
+    bodyNode->setBaseObjectId(objectId);
+  }
 
   ~PhysicsObjectBase() override = default;
 
@@ -82,8 +89,22 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
     return static_cast<const scene::SceneNode&>(
         Magnum::SceneGraph::AbstractFeature3D::object());
   }
+
+  /** @brief Get a copy of the template used to initialize this object
+   * or scene.
+   * @return A copy of the initialization template used to create this object
+   * instance or nullptr if no template exists.
+   */
+  template <class T>
+  std::shared_ptr<T> getInitializationAttributes() const {
+    if (!objInitAttributes_) {
+      return nullptr;
+    }
+    return T::create(*(static_cast<const T*>(objInitAttributes_.get())));
+  }
+
   /**
-   * @brief Get the @ref physics::MotionType of the object. See @ref
+   * @brief Get the @ref MotionType of the object. See @ref
    * setMotionType.
    * @return The object's current @ref MotionType.
    */
@@ -145,7 +166,11 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
    * @return Whether or not the object is in contact with any other collision
    * enabled objects.
    */
-  virtual bool contactTest() { return false; }
+  virtual bool contactTest() {
+    ESP_ERROR()
+        << "Not implemented. Install with --bullet to use this feature.";
+    return false;
+  }
 
   /**
    * @brief Manually set the collision group for an object.
@@ -193,6 +218,47 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
       node().setTranslation(vector);
       syncPose();
     }
+  }
+
+  /**
+   * @brief Given the list of passed points in this object's local space, return
+   * those points transformed to world space.
+   * @param points vector of points in object local space
+   * @param linkID Unused for rigids.
+   * @return vector of points transformed into world space
+   */
+  virtual std::vector<Mn::Vector3> transformLocalPointsToWorld(
+      const std::vector<Mn::Vector3>& points,
+      CORRADE_UNUSED int linkID = ID_UNDEFINED) const {
+    std::vector<Mn::Vector3> wsPoints;
+    wsPoints.reserve(points.size());
+    Mn::Vector3 objScale = getScale();
+    Mn::Matrix4 worldTransform = node().absoluteTransformation();
+    for (const auto& lsPoint : points) {
+      wsPoints.emplace_back(worldTransform.transformPoint(lsPoint * objScale));
+    }
+    return wsPoints;
+  }
+
+  /**
+   * @brief Given the list of passed points in world space, return
+   * those points transformed to this object's local space.
+   * @param points vector of points in world space
+   * @param linkID Unused for rigids.
+   * @return vector of points transformed to be in local space
+   */
+  virtual std::vector<Mn::Vector3> transformWorldPointsToLocal(
+      const std::vector<Mn::Vector3>& points,
+      CORRADE_UNUSED int linkID = ID_UNDEFINED) const {
+    std::vector<Mn::Vector3> lsPoints;
+    lsPoints.reserve(points.size());
+    Mn::Vector3 objScale = getScale();
+    Mn::Matrix4 worldTransform = node().absoluteTransformation();
+    for (const auto& wsPoint : points) {
+      lsPoints.emplace_back(worldTransform.inverted().transformPoint(wsPoint) /
+                            objScale);
+    }
+    return lsPoints;
   }
 
   /**
@@ -413,7 +479,7 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
 
   template <class U>
   void setSceneInstanceAttr(std::shared_ptr<U> instanceAttr) {
-    _initObjInstanceAttrs = std::move(instanceAttr);
+    _objInstanceInitAttributes = std::move(instanceAttr);
   }  // setSceneInstanceAttr
 
   /**
@@ -430,7 +496,6 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
    * @brief This function will overwrite this object's existing user-defined
    * attributes with @p attr.
    * @param attr A ptr to the user defined attributes specified for this object.
-   * merge into them.
    */
   void setUserAttributes(core::config::Configuration::ptr attr) {
     userAttributes_ = std::move(attr);
@@ -439,31 +504,187 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
   /**
    * @brief This function will merge this object's existing user-defined
    * attributes with @p attr by overwriting it with @p attr.
-   * @param attr A ptr to the user defined attributes specified for this object.
-   * merge into them.
+   * @param attr A ptr to the user defined attributes that are to be merged into
+   * this object's existing user-defined attributes.
    */
   void mergeUserAttributes(const core::config::Configuration::ptr& attr) {
     userAttributes_->overwriteWithConfig(attr);
   }
 
+  /**
+   * @brief Get a reference to the existing MarkerSets for this object.
+   */
+  metadata::attributes::MarkerSets::ptr getMarkerSets() const {
+    return markerSets_;
+  }
+
+  /**
+   * @brief This function will overwrite this object's existing MarkerSets
+   * attributes with @p attr.
+   * @param attr A ptr to the MarkerSets attributes specified for this object.
+   */
+  void setMarkerSets(metadata::attributes::MarkerSets::ptr attr) {
+    markerSets_ = std::move(attr);
+  }
+
+  /**
+   * @brief This function will merge this object's existing MarkerSets
+   * attributes with @p attr by overwriting it with @p attr.
+   * @param attr A ptr to the user defined attributes specified for this object.
+   * with mergee into them.
+   */
+  void mergeMarkerSets(const metadata::attributes::MarkerSets::ptr& attr) {
+    markerSets_->overwriteWithConfig(attr);
+  }
+
+  /**
+   * @brief Retrieves the hierarchical map-of-map-of-maps containing
+   * the @ref MarkerSets constituent marker points, in local space
+   * (which is the space they are given in).
+   */
+  std::unordered_map<
+      std::string,
+      std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::vector<Mn::Vector3>>>>
+  getMarkerPointsLocal() const {
+    return markerSets_->getAllMarkerPoints();
+  }
+
+  /**
+   * @brief Retrieves the hierarchical map-of-map-of-maps containing
+   * the @ref MarkerSets constituent marker points, in local space
+   * (which is the space they are given in).
+   */
+  virtual std::unordered_map<
+      std::string,
+      std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::vector<Mn::Vector3>>>>
+  getMarkerPointsGlobal() const {
+    const auto lclPoints = markerSets_->getAllMarkerPoints();
+    std::unordered_map<
+        std::string,
+        std::unordered_map<
+            std::string,
+            std::unordered_map<std::string, std::vector<Mn::Vector3>>>>
+        res{};
+    // for each task
+    for (const auto& taskEntry : lclPoints) {
+      const std::string taskName = taskEntry.first;
+      std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::vector<Mn::Vector3>>>
+          perTaskMap;
+      // for each link - should only have 1 link in rigids
+      for (const auto& linkEntry : taskEntry.second) {
+        const std::string linkName = linkEntry.first;
+        std::unordered_map<std::string, std::vector<Mn::Vector3>> perLinkMap;
+        // for each set in link
+        for (const auto& markersEntry : linkEntry.second) {
+          const std::string markersName = markersEntry.first;
+          perLinkMap[markersName] =
+              transformLocalPointsToWorld(markersEntry.second, ID_UNDEFINED);
+        }
+        perTaskMap[linkName] = perLinkMap;
+      }
+      res[taskName] = perTaskMap;
+    }
+    return res;
+  }  // getMarkerPointsGlobal
+
+  /**
+   * @brief Get the scale of the object set during initialization.
+   * @return The scaling for the object relative to its initially loaded meshes.
+   */
+  virtual Magnum::Vector3 getScale() const { return _creationScale; }
+
+  /**
+   * @brief Return whether or not this object is articulated. Override in
+   * ArticulatedObject
+   */
+  bool isArticulated() const { return _isArticulated; }
+
+  /** @brief Return the local axis-aligned bounding box of the this object.*/
+  virtual const Mn::Range3D& getAabb() { return node().getCumulativeBB(); }
+
+  /** @brief Set the managed object used to reference this object externally
+   * (i.e. via python)*/
+  template <class T>
+  void setManagedObjectPtr(std::shared_ptr<T> managedObjPtr) {
+    _managedObject = std::move(managedObjPtr);
+  }
+
  protected:
-  /** @brief Accessed internally. Get an appropriately cast copy of the @ref
+  /**
+   * @brief Accessed Internally. Get the Managed Object that references this
+   * object.
+   */
+  template <class T>
+  std::shared_ptr<T> getManagedObjectPtrInternal() const {
+    if (!_managedObject) {
+      return nullptr;
+    }
+    static_assert(
+        std::is_base_of<core::managedContainers::AbstractManagedObject,
+                        T>::value,
+        "AbstractManagedObject must be base class of desired Managed Object "
+        "class.");
+
+    return std::static_pointer_cast<T>(_managedObject);
+  }
+
+  /**
+   * @brief Used Internally on object creation. Set whether or not this object
+   * is articulated.
+   */
+  void setIsArticulated(bool isArticulated) { _isArticulated = isArticulated; }
+
+  /**
+   * @brief Accessed internally. Get an appropriately cast copy of the @ref
    * metadata::attributes::SceneObjectInstanceAttributes used to place the
    * object within the scene.
    * @return A copy of the initialization template used to create this object
    * instance or nullptr if no template exists.
    */
   template <class T>
-  std::shared_ptr<T> getInitObjectInstanceAttrInternal() const {
-    if (!_initObjInstanceAttrs) {
+  std::shared_ptr<T> getInitObjectInstanceAttrCopyInternal() const {
+    if (!_objInstanceInitAttributes) {
       return nullptr;
     }
-    return T::create(*(static_cast<T*>(_initObjInstanceAttrs.get())));
+    static_assert(
+        std::is_base_of<metadata::attributes::SceneObjectInstanceAttributes,
+                        T>::value,
+        "SceneObjectInstanceAttributes must be base class of desired instance "
+        "attributes class.");
+    return T::create(
+        *(static_cast<const T*>(_objInstanceInitAttributes.get())));
+  }
+
+  /**
+   * @brief Accessed internally. Get the
+   * @ref metadata::attributes::SceneObjectInstanceAttributes used to
+   * create and place the object within the scene, appropriately cast for
+   * object type.
+   * @return The initialization template used to create this object
+   * instance or nullptr if no template exists.
+   */
+  template <class T>
+  std::shared_ptr<const T> getInitObjectInstanceAttrInternal() const {
+    if (!_objInstanceInitAttributes) {
+      return nullptr;
+    }
+    static_assert(
+        std::is_base_of<metadata::attributes::SceneObjectInstanceAttributes,
+                        T>::value,
+        "SceneObjectInstanceAttributes must be base class of desired instance "
+        "attributes class.");
+    return std::static_pointer_cast<const T>(_objInstanceInitAttributes);
   }
 
   /**
    * @brief Reverses the COM correction transformation for objects that require
-   * it. Currently a simple passthrough for stages and Articulated Objects.
+   * it. Currently a simple passthrough for stages and articulated objects.
    */
   virtual Magnum::Vector3 getUncorrectedTranslation() const {
     return getTranslation();
@@ -471,13 +692,14 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
 
   /** @brief Accessed internally. Get an appropriately cast copy of the @ref
    * metadata::attributes::SceneObjectInstanceAttributes used to place the
-   * object within the scene, updated to have the c.
+   * object within the scene, updated to have the current transformation and
+   * status of the object.
    * @return A copy of the initialization template used to create this object
    * instance or nullptr if no template exists.
    */
   template <class T>
   std::shared_ptr<T> getCurrentObjectInstanceAttrInternal() {
-    if (!_initObjInstanceAttrs) {
+    if (!_objInstanceInitAttributes) {
       return nullptr;
     }
     static_assert(
@@ -486,15 +708,37 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
         "PhysicsObjectBase : Cast of SceneObjectInstanceAttributes must be to "
         "class that inherits from SceneObjectInstanceAttributes");
 
-    std::shared_ptr<T> initAttrs = std::const_pointer_cast<T>(
-        T::create(*(static_cast<const T*>(_initObjInstanceAttrs.get()))));
+    std::shared_ptr<T> initObjInstAttrsCopy = std::const_pointer_cast<T>(
+        T::create(*(static_cast<const T*>(_objInstanceInitAttributes.get()))));
     // set values
-    initAttrs->setTranslation(getUncorrectedTranslation());
-    initAttrs->setRotation(getRotation());
-    initAttrs->setMotionType(
-        metadata::attributes::getMotionTypeName(objectMotionType_));
+    const auto translation = getUncorrectedTranslation();
+    if (initObjInstAttrsCopy->getTranslation() != translation) {
+      initObjInstAttrsCopy->setTranslation(translation);
+    }
+    const auto rotation = getRotation();
+    if (initObjInstAttrsCopy->getRotation() != rotation) {
+      initObjInstAttrsCopy->setRotation(rotation);
+    }
+    // only change if different
+    if (initObjInstAttrsCopy->getMotionType() != objectMotionType_) {
+      initObjInstAttrsCopy->setMotionType(
+          metadata::attributes::getMotionTypeName(objectMotionType_));
+    }
 
-    return initAttrs;
+    // temp copy of object's user attributes. Treated as ground truth for user
+    // attributes.
+    core::config::Configuration::ptr tmpUserAttrs =
+        core::config::Configuration::create(*userAttributes_);
+
+    // now filter this by the creation attributes' copy.  NOTE if the creation
+    // attributes themselves are different than the same-named versions on disk,
+    // these values may be out of sync.
+    tmpUserAttrs->filterFromConfig(
+        objInitAttributes_->getUserConfigurationView());
+    // copy these over the existing user defined fields
+    // in the instance
+    initObjInstAttrsCopy->setUserConfiguration(tmpUserAttrs);
+    return initObjInstAttrsCopy;
   }
 
   /**
@@ -533,19 +777,54 @@ class PhysicsObjectBase : public Magnum::SceneGraph::AbstractFeature3D {
 
   /**
    * @brief Stores user-defined attributes for this object, held as a smart
-   * pointer to a @ref esp::core::Configuration. These attributes are not
-   * internally processed by habitat, but provide a "scratch pad" for the user
-   * to access and save important information and metadata.
+   * pointer to a @ref esp::core::config::Configuration. These attributes are
+   * not internally processed by habitat, but provide a "scratch pad" for the
+   * user to access and save important information and metadata.
    */
   core::config::Configuration::ptr userAttributes_ = nullptr;
 
+  /**
+   * @brief Stores a reference to the markersets for this object, held as a
+   * smart pointer to a MarkerSets construct, which is an alias for
+   * a @ref esp::core::config::Configuration.
+   */
+  metadata::attributes::MarkerSets::ptr markerSets_ = nullptr;
+
+  /**
+   * @brief Saved template attributes when the object was initialized.
+   */
+  metadata::attributes::AbstractAttributes::cptr objInitAttributes_ = nullptr;
+
+  /**
+   * @brief Set the object's creation scale
+   */
+  void setScale(const Magnum::Vector3& creationScale) {
+    _creationScale = creationScale;
+  }
+
  private:
+  /**
+   * @brief The managed wrapper-based object referencing this object.
+   */
+  core::managedContainers::AbstractManagedObject::ptr _managedObject = nullptr;
+
   /**
    * @brief This object's instancing attributes, if any were used during its
    * creation.
    */
   std::shared_ptr<const metadata::attributes::SceneObjectInstanceAttributes>
-      _initObjInstanceAttrs = nullptr;
+      _objInstanceInitAttributes = nullptr;
+
+  /**
+   * @brief The scale applied to this object on creation
+   */
+  Mn::Vector3 _creationScale{1.0f, 1.0f, 1.0f};
+
+  /**
+   * @brief Whether or not this is an articulated object. Set to true in
+   * articulated object constructors.
+   */
+  bool _isArticulated = false;
 
  public:
   ESP_SMART_POINTERS(PhysicsObjectBase)

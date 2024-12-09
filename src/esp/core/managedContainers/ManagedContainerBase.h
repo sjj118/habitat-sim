@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -6,9 +6,9 @@
 #define ESP_CORE_MANAGEDCONTAINERBASE_H_
 
 /** @file
- * @brief Abstract Class @ref esp::core::ManagedContainerBase : type-independent
- * container functionality consumed by @ref esp::core::ManagedContainer to cut
- * down on code bload.
+ * @brief Abstract Class @ref esp::core::managedContainers::ManagedContainerBase
+ * : type-independent container functionality consumed by @ref
+ * esp::core::managedContainers::ManagedContainer to cut down on code bload.
  */
 
 #include <deque>
@@ -92,7 +92,7 @@ class ManagedContainerBase {
                                               bool contains = true) {
     std::vector<std::string> handles =
         getObjectHandlesBySubstring(subStr, contains);
-    return this->setLockByHandles(handles, lock);
+    return setLockByHandles(handles, lock);
   }  // ManagedContainerBase::setLockBySubstring
 
   /**
@@ -143,8 +143,8 @@ class ManagedContainerBase {
    * managed objects cannot be deleted, although they can be edited.
    */
   std::vector<std::string> getUndeletableObjectHandles() const {
-    std::vector<std::string> res(this->undeletableObjectNames_.begin(),
-                                 this->undeletableObjectNames_.end());
+    std::vector<std::string> res(undeletableObjectNames_.begin(),
+                                 undeletableObjectNames_.end());
     return res;
   }  // ManagedContainerBase::getUndeletableObjectHandles
 
@@ -154,7 +154,7 @@ class ManagedContainerBase {
    * @return True if handle exists and is undeletable.
    */
   bool getIsUndeletable(const std::string& key) const {
-    return (this->undeletableObjectNames_.count(key) > 0);
+    return (undeletableObjectNames_.count(key) > 0);
   }
 
   /**
@@ -164,8 +164,8 @@ class ManagedContainerBase {
    * locked.
    */
   std::vector<std::string> getUserLockedObjectHandles() const {
-    std::vector<std::string> res(this->userLockedObjectNames_.begin(),
-                                 this->userLockedObjectNames_.end());
+    std::vector<std::string> res(userLockedObjectNames_.begin(),
+                                 userLockedObjectNames_.end());
     return res;
   }  // ManagedContainerBase::getUserLockedObjectHandles
 
@@ -175,7 +175,7 @@ class ManagedContainerBase {
    * @return True if handle exists and is user-locked.
    */
   bool getIsUserLocked(const std::string& key) const {
-    return (this->userLockedObjectNames_.count(key) > 0);
+    return (userLockedObjectNames_.count(key) > 0);
   }
 
   /**
@@ -203,7 +203,8 @@ class ManagedContainerBase {
     auto objKeyByIDIter = objectLibKeyByID_.find(objectID);
     if (objKeyByIDIter == objectLibKeyByID_.end()) {
       ESP_ERROR() << "Unknown" << objectType_
-                  << "managed object ID:" << objectID << ". Aborting";
+                  << "managed object ID:" << objectID
+                  << ", so unable to retrieve handle.";
       // never will have registered object with registration handle == ""
       return "";
     }
@@ -295,14 +296,16 @@ class ManagedContainerBase {
   }
 
   /**
-   * @brief Only used from class template AddObject method.  put the passed
+   * @brief Only used from class template AddObject method. put the passed
    * smart poitner in the library.
    * @param ptr the smart pointer to the object being managed
    * @param handle the name (key) to use for the object in the library
    */
   void setObjectInternal(const std::shared_ptr<void>& ptr,
+                         int objId,
                          const std::string& handle) {
     objectLibrary_[handle] = ptr;
+    objectLibKeyByID_.emplace(objId, handle);
   }
 
   /**
@@ -326,8 +329,10 @@ class ManagedContainerBase {
   bool checkExistsWithMessage(const std::string& objectHandle,
                               const std::string& src) const {
     if (!getObjectLibHasHandle(objectHandle)) {
-      ESP_ERROR() << src << ": Unknown" << objectType_
-                  << "managed object handle :" << objectHandle << ". Aborting";
+      ESP_ERROR(Magnum::Debug::Flag::NoSpace)
+          << "<" + this->objectType_ + ">::" << src
+          << " : Managed object handle `" << objectHandle
+          << "` not found in ManagedContainer, so aborting.";
       return false;
     }
     return true;
@@ -379,8 +384,8 @@ class ManagedContainerBase {
       const std::string& name) const;
 
   /**
-   * @brief Get a list of all managed objects of passed type whose origin
-   * handles contain substr, ignoring subStr's case.
+   * @brief Get a list of all managed objects' handles of passed type whose
+   * origin handles contain substr, ignoring subStr's case.
    *
    * This version works on std::unordered_map<int,std::string> maps' values.
    * @param mapOfHandles map containing the desired managed object handles
@@ -398,8 +403,28 @@ class ManagedContainerBase {
       bool sorted) const;
 
   /**
-   * @brief Get a list of all managed objects of passed type whose origin
-   * handles contain substr, ignoring subStr's case.
+   * @brief Get a list of all managed objects' handles of passed type whose
+   * origin handles contain substr, ignoring subStr's case.
+   *
+   * This version works on the internal objectLibKeyByID_ map
+   * @param subStr substring to search for within existing managed objects
+   * @param contains Whether to search for handles containing, or not
+   * containing, substr
+   * @param sorted whether the return vector values are sorted
+   * @return vector of 0 or more managed object handles containing/not
+   * containing the passed substring
+   */
+  std::vector<std::string> getAllObjectHandlesBySubStringPerType(
+      const std::string& subStr,
+      bool contains,
+      bool sorted) const {
+    return getObjectHandlesBySubStringPerType(objectLibKeyByID_, subStr,
+                                              contains, sorted);
+  }
+
+  /**
+   * @brief Get a list of all managed objects' handles of passed type whose
+   * origin handles contain substr, ignoring subStr's case.
    *
    * This version works on std::unordered_map<std::string,
    * std::set<std::string>> maps's keys.
@@ -439,15 +464,39 @@ class ManagedContainerBase {
   virtual void resetFinalize() = 0;
 
   // ========  Instance Variables ========
-  /**
-   * @brief Maps string keys to managed object managed objects
-   */
-  std::unordered_map<std::string, std::shared_ptr<void>> objectLibrary_;
 
   /** @brief A descriptive name of the managed object being managed by this
    * manager.
    */
   const std::string objectType_;
+
+  /**
+   * @brief Provide a const iterator over the @p objectLibrary_
+   */
+  std::pair<
+      std::unordered_map<std::string, std::shared_ptr<void>>::const_iterator,
+      std::unordered_map<std::string, std::shared_ptr<void>>::const_iterator>
+  getObjectLibIterator() const {
+    return std::make_pair(objectLibrary_.cbegin(), objectLibrary_.cend());
+  }
+
+  /**
+   * @brief Clear the mapping of undeletable object handles
+   */
+  void clearUndeletableObjectNames() { undeletableObjectNames_.clear(); }
+
+  /**
+   * @brief Add an undeleteable object's name to the mapping
+   */
+  void addUndeletableObjectName(std::string objName) {
+    undeletableObjectNames_.insert(std::move(objName));
+  }
+
+ private:
+  /**
+   * @brief Maps string keys to managed object managed objects
+   */
+  std::unordered_map<std::string, std::shared_ptr<void>> objectLibrary_;
 
   /**
    * @brief Maps all object attribute IDs to the appropriate handles used

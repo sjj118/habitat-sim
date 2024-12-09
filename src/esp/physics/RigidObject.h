@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -7,8 +7,7 @@
 
 /** @file
  * @brief Class @ref esp::physics::RigidObject, enum @ref
- * esp::physics::MotionType, enum @ref esp::physics::RigidObjectType, struct
- * @ref VelocityControl
+ * esp::physics::MotionType, struct @ref esp::physics::VelocityControl
  */
 
 #include <Corrade/Containers/Optional.h>
@@ -16,9 +15,9 @@
 #include "esp/assets/Asset.h"
 #include "esp/assets/BaseMesh.h"
 #include "esp/assets/GenericSemanticMeshData.h"
-#include "esp/assets/ResourceManager.h"
 #include "esp/core/Esp.h"
 #include "esp/core/RigidState.h"
+#include "esp/metadata/attributes/ObjectAttributes.h"
 #include "esp/scene/SceneNode.h"
 
 #include "esp/physics/RigidBase.h"
@@ -30,6 +29,7 @@ namespace assets {
 class ResourceManager;
 }  // namespace assets
 namespace physics {
+class ManagedRigidObject;
 
 /**@brief Convenience struct for applying constant velocity control to a rigid
  * body. */
@@ -120,16 +120,34 @@ class RigidObject : public RigidBase {
   bool finalizeObject() override;
 
   /**
-   * @brief Get a copy of the template used to initialize this object.
+   * @brief Get a copy of the template attributes describing the initial state
+   * of this object. These attributes have the combination of date from the
+   * original object attributes and specific instance attributes used to create
+   * this object. Note : values will reflect both sources, and should not be
+   * saved to disk as object attributes, since instance attribute modifications
+   * will still occur on subsequent loads
    *
    * @return A copy of the @ref esp::metadata::attributes::ObjectAttributes
    * template used to create this object.
    */
   std::shared_ptr<metadata::attributes::ObjectAttributes>
   getInitializationAttributes() const {
-    return RigidBase::getInitializationAttributes<
+    return PhysicsObjectBase::getInitializationAttributes<
         metadata::attributes::ObjectAttributes>();
   };
+
+  /**
+   * @brief Get the ManagedRigidObject or BulletManagedRigidObject referencing
+   * this object.
+   */
+  template <class T>
+  std::shared_ptr<T> getManagedRigidObject() const {
+    static_assert(std::is_base_of<ManagedRigidObject, T>::value,
+                  "ManagedRigidObject must be base class of desired "
+                  "RigidObject's Managed wrapper class.");
+
+    return PhysicsObjectBase::getManagedObjectPtrInternal<T>();
+  }
 
  private:
   /**
@@ -159,30 +177,41 @@ class RigidObject : public RigidBase {
   void setIsCOMCorrected(bool _isCOMCorrected) {
     isCOMCorrected_ = _isCOMCorrected;
   }
+  bool isCOMCorrected() const { return isCOMCorrected_; }
 
   /**
    * @brief Reverses the COM correction transformation for objects that require
-   * it. Currently a simple passthrough for stages and Articulated Objects.
+   * it.
    */
   Magnum::Vector3 getUncorrectedTranslation() const override {
     auto translation = getTranslation();
-    auto rotation = getRotation();
     if (isCOMCorrected_) {
+      auto rotation = getRotation();
       translation += rotation.transformVector(visualNode_->translation());
     }
     return translation;
   }
 
   /**
-   * @brief Set the @ref MotionType of the object. If the object is @ref
-   * ObjectType::SCENE it can only be @ref esp::physics::MotionType::STATIC. If
-   * the object is
-   * @ref ObjectType::OBJECT is can also be set to @ref
-   * esp::physics::MotionType::KINEMATIC. Only if a dervied @ref PhysicsManager
-   * implementing dynamics is in use can the object be set to @ref
-   * esp::physics::MotionType::DYNAMIC.
-   * @param mt The desirved @ref MotionType.
-   * @return true if successfully set, false otherwise.
+   * @brief Retrieves the COM correction translation for objects that require
+   * it.
+   */
+  Magnum::Vector3 getCOMCorrection() const {
+    if (isCOMCorrected_) {
+      return visualNode_->translation();
+    }
+    return Magnum::Vector3();
+  }  // getCOMCorrection
+
+  /**
+   * @brief Set the @ref MotionType of the object. If the construct is a @ref
+   * physics::RigidStage, it can only be @ref
+   * physics::MotionType::STATIC. If the object is
+   * @ref physics::RigidObject it can also be set to @ref
+   * physics::MotionType::KINEMATIC. Only if a dervied @ref
+   * physics::PhysicsManager implementing dynamics is in use can the object
+   * be set to @ref physics::MotionType::DYNAMIC.
+   * @param mt The desired @ref MotionType.
    */
   void setMotionType(MotionType mt) override;
 
@@ -192,8 +221,7 @@ class RigidObject : public RigidBase {
   VelocityControl::ptr getVelocityControl() { return velControl_; };
 
   /**
-   * @brief Set the object's state from a @ref
-   * esp::metadata::attributes::SceneObjectInstanceAttributes
+   * @brief Set the object's state from a @ref esp::metadata::attributes::SceneObjectInstanceAttributes
    */
   void resetStateFromSceneInstanceAttr() override;
 

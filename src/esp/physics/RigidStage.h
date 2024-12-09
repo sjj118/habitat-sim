@@ -1,10 +1,11 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
 #ifndef ESP_PHYSICS_RIGIDSTAGE_H_
 #define ESP_PHYSICS_RIGIDSTAGE_H_
 
+#include "esp/metadata/attributes/StageAttributes.h"
 #include "esp/physics/RigidBase.h"
 
 /** @file
@@ -39,16 +40,22 @@ class RigidStage : public RigidBase {
                       initAttributes) override;
 
   /**
-   * @brief Get a copy of the template used to initialize this stage object.
+   * @brief Get a copy of the template attributes describing the initial state
+   * of this stage object. These attributes have the combination of date from
+   * the original object attributes and specific instance attributes used to
+   * create this stage object. Note : values will reflect both sources, and
+   * should not be saved to disk as object attributes, since instance attribute
+   * modifications will still occur on subsequent loads
    *
    * @return A copy of the @ref esp::metadata::attributes::StageAttributes
    * template used to create this stage object.
    */
   std::shared_ptr<metadata::attributes::StageAttributes>
   getInitializationAttributes() const {
-    return RigidBase::getInitializationAttributes<
+    return PhysicsObjectBase::getInitializationAttributes<
         metadata::attributes::StageAttributes>();
   };
+
   /**
    * @brief Finalize the creation of this @ref RigidStage
    * @return whether successful finalization.
@@ -86,7 +93,8 @@ class RigidStage : public RigidBase {
    */
   void setMotionType(CORRADE_UNUSED MotionType mt) override {
     ESP_WARNING() << "Stages cannot have their "
-                     "motion type changed from MotionType::STATIC.  Aborting.";
+                     "motion type changed from MotionType::STATIC, so "
+                     "aborting; motion type is unchanged.";
   }
 
  public:

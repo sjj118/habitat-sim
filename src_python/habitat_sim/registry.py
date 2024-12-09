@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -75,8 +75,8 @@ class _Registry:
 
         if controller is None:
             return _wrapper
-        else:
-            return _wrapper(controller)
+
+        return _wrapper(controller)
 
     @classmethod
     def register_noise_model(
@@ -104,37 +104,8 @@ class _Registry:
 
         if noise_model is None:
             return _wrapper
-        else:
-            return _wrapper(noise_model)
 
-    @classmethod
-    def register_pose_extractor(
-        cls, pose_extractor: Optional[Type] = None, *, name: Optional[str] = None
-    ):
-        r"""Registers a new pose extractor model with Habitat-Sim
-
-        :param pose_extractor: The class of the pose extractor to register
-            If `None`, will return a wrapper for use with decorator syntax
-        :param name: The name to register the noise model with
-            If `None`, will register with the name of the pose_extractor
-        """
-        from habitat_sim.utils.data.pose_extractor import PoseExtractor
-
-        def _wrapper(pose_extractor: Type[PoseExtractor]):
-            assert issubclass(
-                pose_extractor, PoseExtractor
-            ), "All pose_extractors must inherit from habitat_sim.utils.data.PoseExtractor"
-
-            cls._mapping["pose_extractor"][
-                pose_extractor.__name__ if name is None else name
-            ] = pose_extractor
-
-            return pose_extractor
-
-        if pose_extractor is None:
-            return _wrapper
-        else:
-            return _wrapper(pose_extractor)
+        return _wrapper(noise_model)
 
     @classmethod
     def _get_impl(cls, _type, name: str):
@@ -155,14 +126,6 @@ class _Registry:
         :param name: The name provided to `register_noise_model`
         """
         return cls._get_impl("sensor_noise_model", name)
-
-    @classmethod
-    def get_pose_extractor(cls, name: str):
-        r"""Retrieve the pose_extractor registered under ``name``
-
-        :param name: The name provided to `register_pose_extractor`
-        """
-        return cls._get_impl("pose_extractor", name)
 
 
 registry = _Registry()

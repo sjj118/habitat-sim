@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -26,19 +26,15 @@ enum class SensorType : int32_t {
   Depth,
   Normal,
   Semantic,
-  Path,
-  Goal,
-  Force,
-  Tensor,
-  Text,
   Audio,
-  SensorTypeCount,  // add new type above this term!!
+  EndSensorType,
 };
 
 enum class ObservationSpaceType {
   None = 0,
   Tensor = 1,
   Text = 2,
+  EndObservationSpaceType,
 };
 
 enum class SensorSubType : int32_t {
@@ -48,7 +44,7 @@ enum class SensorSubType : int32_t {
   Fisheye,
   Equirectangular,
   ImpulseResponse,
-  SensorSubTypeCount,  // add new type above this term!!
+  EndSensorSubType,
 };
 
 // Specifies the configuration parameters of a sensor
@@ -57,8 +53,8 @@ struct SensorSpec {
   std::string uuid = "";
   SensorType sensorType = SensorType::None;
   SensorSubType sensorSubType = SensorSubType::None;
-  vec3f position = {0, 1.5, 0};
-  vec3f orientation = {0, 0, 0};
+  Magnum::Vector3 position = {0, 1.5, 0};
+  Magnum::Vector3 orientation = {0, 0, 0};
   std::string noiseModel = "None";
   SensorSpec() = default;
   virtual ~SensorSpec() = default;
@@ -84,7 +80,7 @@ struct ObservationSpace {
   ESP_SMART_POINTERS(ObservationSpace)
 };
 
-// Represents a sensor that provides data from the environment to an agent
+// Represents a sensor that provides data from the environment
 class Sensor : public Magnum::SceneGraph::AbstractFeature3D {
  public:
   explicit Sensor(scene::SceneNode& node, SensorSpec::ptr spec);
@@ -112,6 +108,11 @@ class Sensor : public Magnum::SceneGraph::AbstractFeature3D {
    * @brief Return whether or not this Sensor is a VisualSensor
    */
   virtual bool isVisualSensor() const { return false; }
+
+  /**
+   * @brief Return whether or not this Sensor can use the HBAO effect
+   */
+  virtual bool canUseHBAO() const { return false; }
 
   /**
    * @brief Sets node's position and orientation from Sensor's SensorSpec

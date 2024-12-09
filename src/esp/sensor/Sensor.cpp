@@ -1,14 +1,14 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
 #include "Sensor.h"
-#include <Magnum/EigenIntegration/Integration.h>
 #include "esp/core/Check.h"
 #include "esp/scene/SceneGraph.h"
 
 #include <utility>
 
+namespace Mn = Magnum;
 namespace esp {
 namespace sensor {
 
@@ -28,16 +28,16 @@ void SensorSpec::sanityCheck() const {
   CORRADE_ASSERT(!uuid.empty(),
                  "SensorSpec::sanityCheck(): uuid cannot be an empty string", );
   CORRADE_ASSERT(
-      sensorType > SensorType::None && sensorType < SensorType::SensorTypeCount,
+      sensorType > SensorType::None && sensorType < SensorType::EndSensorType,
       "SensorSpec::sanityCheck(): sensorType" << int32_t(sensorType)
                                               << "is illegal", );
   CORRADE_ASSERT(sensorSubType > SensorSubType::None &&
-                     sensorSubType < SensorSubType::SensorSubTypeCount,
+                     sensorSubType < SensorSubType::EndSensorSubType,
                  "SensorSpec::sanityCheck(): sensorSubType"
                      << int32_t(sensorType) << "is illegal", );
-  CORRADE_ASSERT((abs(position.array()) >= 0).any(),
+  CORRADE_ASSERT((Mn::Math::abs(position) >= Mn::Vector3{0.0f}).any(),
                  "SensorSpec::sanityCheck(): position is illegal", );
-  CORRADE_ASSERT((abs(orientation.array()) >= 0).any(),
+  CORRADE_ASSERT((Mn::Math::abs(orientation) >= Mn::Vector3{0.0f}).any(),
                  "SensorSpec::sanityCheck(): orientation is illegal", );
   CORRADE_ASSERT(!noiseModel.empty(),
                  "SensorSpec::sanityCheck(): noiseModel is unitialized", );
@@ -51,7 +51,7 @@ Sensor::Sensor(scene::SceneNode& node, SensorSpec::ptr spec)
   CORRADE_ASSERT(
       node.getSceneNodeTags() & scene::SceneNodeTag::Leaf,
       "Sensor::Sensor(): Cannot attach a sensor to a non-LEAF node.", );
-  node.setType(scene::SceneNodeType::SENSOR);
+  node.setType(scene::SceneNodeType::Sensor);
   CORRADE_ASSERT(spec_,
                  "Sensor::Sensor(): Cannot initialize sensor. The "
                  "specification is null.", );
@@ -76,7 +76,7 @@ void Sensor::setTransformationFromSpec() {
 
   node().resetTransformation();
 
-  node().translate(Magnum::Vector3(spec_->position));
+  node().translate(spec_->position);
   node().rotateX(Magnum::Rad(spec_->orientation[0]));
   node().rotateY(Magnum::Rad(spec_->orientation[1]));
   node().rotateZ(Magnum::Rad(spec_->orientation[2]));

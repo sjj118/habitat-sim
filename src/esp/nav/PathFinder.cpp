@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -15,21 +15,29 @@
 #include <Magnum/EigenIntegration/Integration.h>
 
 #include <Corrade/Containers/Optional.h>
+#include <Corrade/Utility/Path.h>
 
 #include <cstdio>
 // NOLINTNEXTLINE
 #define _USE_MATH_DEFINES
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "esp/assets/MeshData.h"
 #include "esp/core/Esp.h"
 
+#include "DetourCommon.h"
 #include "DetourNavMesh.h"
 #include "DetourNavMeshBuilder.h"
 #include "DetourNavMeshQuery.h"
 #include "DetourNode.h"
 #include "Recast.h"
+
+#include <rapidjson/document.h>
+#include "esp/core/Check.h"
+#include "esp/io/Json.h"
+#include "esp/io/JsonAllTypes.h"
 
 namespace Mn = Magnum;
 namespace Cr = Corrade;
@@ -47,7 +55,7 @@ bool operator==(const NavMeshSettings& a, const NavMeshSettings& b) {
          CLOSE(edgeMaxError) && CLOSE(vertsPerPoly) &&
          CLOSE(detailSampleDist) && CLOSE(detailSampleMaxError) &&
          EQ(filterLowHangingObstacles) && EQ(filterLedgeSpans) &&
-         EQ(filterWalkableLowHeightSpans);
+         EQ(filterWalkableLowHeightSpans) && EQ(includeStaticObjects);
 
 #undef CLOSE
 #undef EQ
@@ -56,10 +64,41 @@ bool operator==(const NavMeshSettings& a, const NavMeshSettings& b) {
 bool operator!=(const NavMeshSettings& a, const NavMeshSettings& b) {
   return !(a == b);
 }
+
+void NavMeshSettings::readFromJSON(const std::string& jsonFile) {
+  if (!Corrade::Utility::Path::exists(jsonFile.data())) {
+    ESP_ERROR() << "File" << jsonFile << "not found.";
+    return;
+  }
+  try {
+    auto newDoc = esp::io::parseJsonFile(jsonFile);
+
+    esp::io::fromJsonValue(newDoc, *this);
+
+  } catch (...) {
+    ESP_ERROR() << "Failed to parse keyframes from" << jsonFile << ".";
+  }
+}
+
+void NavMeshSettings::writeToJSON(const std::string& jsonFile) const {
+  rapidjson::Document d(rapidjson::kObjectType);
+  rapidjson::Document::AllocatorType& allocator = d.GetAllocator();
+  auto jsonObj = esp::io::toJsonValue(*this, allocator);
+  d.Swap(jsonObj);
+  ESP_CHECK(!d.ObjectEmpty(), "Error writing JSON. Shouldn't happen.");
+
+  const float maxDecimalPlaces = 7;
+  auto ok = esp::io::writeJsonToFile(d, jsonFile, true, maxDecimalPlaces);
+  ESP_CHECK(ok, "writeSavedKeyframesToFile: unable to write to " << jsonFile);
+}
+
 struct MultiGoalShortestPath::Impl {
   std::vector<vec3f> requestedEnds;
 
   std::vector<dtPolyRef> endRefs;
+  //! Tracks whether an endpoint is valid or not as determined by setup to avoid
+  //! extra work or issues later.
+  std::vector<bool> endIsValid;
   std::vector<vec3f> pathEnds;
 
   std::vector<float> minTheoreticalDist;
@@ -108,6 +147,17 @@ std::tuple<dtStatus, dtPolyRef, vec3f> projectToPoly(
 }  // namespace
 
 namespace impl {
+
+typedef unsigned short int ushort;  // NOLINT
+
+//! (flag & flag) operator wrapper for function pointers
+inline ushort andFlag(ushort curFlags, ushort flag) {
+  return curFlags & flag;
+}
+//! (flag | flag) operator wrapper for function pointers
+inline ushort orFlag(ushort curFlags, ushort flag) {
+  return curFlags | flag;
+}
 
 // Runs connected component analysis on the navmesh to figure out which polygons
 // are connected This gives O(1) lookup for if a path between two polygons
@@ -169,7 +219,23 @@ class IslandSystem {
     return itStart->second == itEnd->second;
   }
 
-  inline float islandRadius(dtPolyRef ref) const {
+  //! check that island index is valid. indexOptional allows ID_UNDEFINED as
+  //! valid.
+  inline void assertValidIsland(int islandIndex, bool indexOptional = true) {
+    if (indexOptional && islandIndex == ID_UNDEFINED) {
+      return;
+    }
+    CORRADE_ASSERT(
+        (islandIndex >= 0 && islandIndex < islandRadius_.size()),
+        islandIndex << " not a valid index for this island system.", );
+  }
+
+  inline float islandRadius(int islandIndex) {
+    assertValidIsland(islandIndex, /*indexOptional*/ false);
+    return islandRadius_[islandIndex];
+  }
+
+  inline float polyIslandRadius(dtPolyRef ref) const {
     auto itRef = polyToIsland_.find(ref);
     if (itRef == polyToIsland_.end())
       return 0.0;
@@ -177,7 +243,165 @@ class IslandSystem {
     return islandRadius_[itRef->second];
   }
 
+  //! Get the area of an island.
+  //! islandIndex=ID_UNDEFINED specifies the full NavMesh area.
+  inline float getNavigableArea(int islandIndex) {
+    assertValidIsland(islandIndex);
+    return islandsToArea_[islandIndex];
+  }
+
+  inline int numIslands() const {
+    // TODO: better way to track number of islands
+    return islandRadius_.size();
+  }
+
+  /**
+   * @brief Sets a specified poly flag for all polys specified by the
+   * islandIndex.
+   *
+   * @param[in] navMesh The navmesh to operate on.
+   * @param[in] flag The flag to set or clear.
+   * @param[in] islandIndex Specify the island. islandIndex == ID_UNDEFINED
+   * specifies all islands.
+   * @param[in] setFlag If true, set the flag(currentFlags OR newFlag),
+   * otherwise clear the flag(currentFlags AND ~newFlag).
+   * @param[in] invert If true, set or clear the flag for all islands except the
+   * specified one. Has no effect if islandIndex == ID_UNDEFINED.
+   */
+  inline void setPolyFlagForIsland(dtNavMesh* navMesh,
+                                   ushort flag,
+                                   int islandIndex = ID_UNDEFINED,
+                                   bool setFlag = true,
+                                   bool invert = false) {
+    assertValidIsland(islandIndex);
+    CORRADE_ASSERT(navMesh != nullptr, "invalid navMesh pointer", );
+    std::vector<int> islands;
+
+    if (islandIndex == ID_UNDEFINED) {
+      // all islands
+      islands.reserve(islandsToPolys_.size());
+      for (auto& itr : islandsToPolys_) {
+        islands.push_back(itr.first);
+      }
+    } else if (invert) {
+      // all but a single island
+      islands.reserve(islandsToPolys_.size());
+      for (auto& itr : islandsToPolys_) {
+        if (itr.first != islandIndex) {
+          islands.push_back(itr.first);
+        }
+      }
+    } else {
+      // a single island
+      islands.push_back(islandIndex);
+    }
+
+    // Pull this check and adjustment logic outside of the main loop
+    ushort (*op)(ushort, ushort) = nullptr;
+    op = setFlag ? orFlag : andFlag;
+    ushort modFlag = setFlag ? flag : ~flag;
+
+    // for each island
+    for (int island : islands) {
+      // for each poly
+      for (auto& polyRef : islandsToPolys_[island]) {
+        // get current flags
+        ushort f = 0;
+        navMesh->getPolyFlags(polyRef, &f);
+        // set the modified flags
+        navMesh->setPolyFlags(polyRef, op(f, modFlag));
+      }
+    }
+  }
+
+  /**
+   * @brief Sets a specified poly flag for all polys specified by the
+   * islandIndex within range of a given circle.
+   *
+   * @param[in] navMesh The navmesh to operate on.
+   * @param[in] flag The flag to set or clear.
+   * @param[in] circleCenter The center of the circle.
+   * @param[in] radius The radius of the circle.
+   * @param[in] islandIndex Specify the island. islandIndex == ID_UNDEFINED
+   * specifies all islands.
+   */
+  inline void setPolyFlagForIslandCircle(dtNavMesh* navMesh,
+                                         ushort flag,
+                                         const vec3f& circleCenter,
+                                         const float radius,
+                                         int islandIndex = ID_UNDEFINED) {
+    assertValidIsland(islandIndex);
+    CORRADE_ASSERT(navMesh != nullptr, "invalid navMesh pointer", );
+    std::vector<int> islands;
+
+    float radSqr = radius * radius;
+
+    // all islands
+    islands.reserve(islandsToPolys_.size());
+    for (auto& itr : islandsToPolys_) {
+      islands.push_back(itr.first);
+    }
+
+    // for each island
+    for (int island : islands) {
+      // for each poly
+      for (auto& polyRef : islandsToPolys_[island]) {
+        // remove all off-island polys immediately
+        if (islandIndex != ID_UNDEFINED && islandIndex != island) {
+          // get current flags
+          ushort f = 0;
+          navMesh->getPolyFlags(polyRef, &f);
+          // set the modified flags
+          navMesh->setPolyFlags(polyRef, orFlag(f, flag));
+          continue;
+        }
+
+        // poly is on island, check if it is outside of range
+        const dtMeshTile* tile = nullptr;
+        const dtPoly* poly = nullptr;
+        navMesh->getTileAndPolyByRefUnsafe(polyRef, &tile, &poly);
+
+        // check if this poly is within range of the circle
+        bool inRange = false;
+        for (int iVert = 0; iVert < poly->vertCount; ++iVert) {
+          int nVert = (iVert + 1) % 3;
+          float tseg = 0;
+          float distSqr = dtDistancePtSegSqr2D(
+              circleCenter.data(),
+              &tile->verts[static_cast<size_t>(poly->verts[iVert]) * 3],
+              &tile->verts[static_cast<size_t>(poly->verts[nVert]) * 3], tseg);
+          if (distSqr < radSqr) {
+            // skip this poly if any edge is within radius
+            inRange = true;
+            break;
+          }
+        }
+        if (!inRange) {
+          // get current flags
+          ushort f = 0;
+          navMesh->getPolyFlags(polyRef, &f);
+          // set the modified flags
+          navMesh->setPolyFlags(polyRef, orFlag(f, flag));
+        }
+      }
+    }
+  }
+
+  // Some polygons have zero area for some reason.  When we navigate into a zero
+  // area polygon, things crash.  So we find all zero area polygons and mark
+  // them as disabled/not navigable.
+  // Also compute the NavMesh areas for later query.
+  void removeZeroAreaPolys(dtNavMesh* navMesh);
+
+  //! return the island for a navmesh polygon
+  inline int getPolyIsland(dtPolyRef polyRef) { return polyToIsland_[polyRef]; }
+
  private:
+  //! map islands to area for quick query
+  std::unordered_map<uint32_t, float> islandsToArea_;
+  //! map islands to lists of polys for quick query and enumeration
+  std::unordered_map<uint32_t, std::vector<dtPolyRef>> islandsToPolys_;
+  //! map polygons to their island for quick look-up
   std::unordered_map<dtPolyRef, uint32_t> polyToIsland_;
   std::vector<float> islandRadius_;
 
@@ -186,6 +410,7 @@ class IslandSystem {
                   const uint32_t newIslandId,
                   const dtPolyRef& startRef,
                   std::vector<vec3f>& islandVerts) {
+    islandsToPolys_[newIslandId].push_back(startRef);
     polyToIsland_.emplace(startRef, newIslandId);
     islandVerts.clear();
 
@@ -226,6 +451,7 @@ class IslandSystem {
           continue;
 
         polyToIsland_.emplace(neighbourRef, newIslandId);
+        islandsToPolys_[newIslandId].push_back(neighbourRef);
         stack.push(neighbourRef);
       }
     }
@@ -246,10 +472,16 @@ struct PathFinder::Impl {
              const float* bmax);
   bool build(const NavMeshSettings& bs, const esp::assets::MeshData& mesh);
 
-  vec3f getRandomNavigablePoint(int maxTries);
+  vec3f getRandomNavigablePoint(int maxTries,
+                                int islandIndex /*= ID_UNDEFINED*/);
   vec3f getRandomNavigablePointAroundSphere(const vec3f& circleCenter,
                                             float radius,
-                                            int maxTries);
+                                            int maxTries,
+                                            int islandIndex /*= ID_UNDEFINED*/);
+  vec3f getRandomNavigablePointInCircle(const vec3f& circleCenter,
+                                        float radius,
+                                        int maxTries,
+                                        int islandIndex /*= ID_UNDEFINED*/);
 
   bool findPath(ShortestPath& path);
   bool findPath(MultiGoalShortestPath& path);
@@ -258,7 +490,10 @@ struct PathFinder::Impl {
   T tryStep(const T& start, const T& end, bool allowSliding);
 
   template <typename T>
-  T snapPoint(const T& pt);
+  T snapPoint(const T& pt, int islandIndex = ID_UNDEFINED);
+
+  template <typename T>
+  int getIsland(const T& pt) const;
 
   bool loadNavMesh(const std::string& path);
 
@@ -266,11 +501,17 @@ struct PathFinder::Impl {
 
   bool isLoaded() const { return navMesh_ != nullptr; };
 
-  float getNavigableArea() const { return navMeshArea_; };
+  float getNavigableArea(int islandIndex /*= ID_UNDEFINED*/) const {
+    return islandSystem_->getNavigableArea(islandIndex);
+  };
+
+  int numIslands();
 
   void seed(uint32_t newSeed);
 
   float islandRadius(const vec3f& pt) const;
+
+  float islandRadius(int islandIndex) const;
 
   float distanceToClosestObstacle(const vec3f& pt,
                                   float maxSearchRadius = 2.0) const;
@@ -281,11 +522,13 @@ struct PathFinder::Impl {
 
   std::pair<vec3f, vec3f> bounds() const { return bounds_; };
 
-  Eigen::Matrix<bool, Eigen::Dynamic, Eigen::Dynamic> getTopDownView(
-      float metersPerPixel,
-      float height) const;
+  Eigen::Matrix<bool, Eigen::Dynamic, Eigen::Dynamic>
+  getTopDownView(float metersPerPixel, float height, float eps) const;
 
-  assets::MeshData::ptr getNavMeshData();
+  Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>
+  getTopDownIslandView(float metersPerPixel, float height, float eps) const;
+
+  assets::MeshData::ptr getNavMeshData(int islandIndex /*= ID_UNDEFINED*/);
 
   Cr::Containers::Optional<NavMeshSettings> getNavMeshSettings() const {
     return navMeshSettings_;
@@ -306,16 +549,10 @@ struct PathFinder::Impl {
 
   //! Holds triangulated geom/topo. Generated when queried. Reset with
   //! navQuery_.
-  assets::MeshData::ptr meshData_ = nullptr;
+  std::unordered_map<int, assets::MeshData::ptr> islandMeshData_;
   Cr::Containers::Optional<NavMeshSettings> navMeshSettings_;
 
-  //! Sum of all NavMesh polygons. Computed on NavMesh load/recompute. See
-  //! removeZeroAreaPolys.
-  float navMeshArea_ = 0;
-
   std::pair<vec3f, vec3f> bounds_;
-
-  void removeZeroAreaPolys();
 
   bool initNavQuery();
 
@@ -357,7 +594,9 @@ enum PolyFlags {
   POLYFLAGS_WALK = 0x01,      // walkable
   POLYFLAGS_DOOR = 0x02,      // ability to move through doors
   POLYFLAGS_DISABLED = 0x04,  // disabled polygon
-  POLYFLAGS_ALL = 0xffff      // all abilities
+  POLYFLAGS_OFF_ISLAND =
+      0x08,               // dynamically set to filter all but a specific island
+  POLYFLAGS_ALL = 0xffff  // all abilities
 };
 }  // namespace
 
@@ -671,12 +910,15 @@ bool PathFinder::Impl::build(const NavMeshSettings& bs,
       return false;
     }
     navMeshSettings_ = {bs};
+  } else {
+    ESP_ERROR() << "cfg.maxVertsPerPoly(" << cfg.maxVertsPerPoly
+                << ") > DT_VERTS_PER_POLYGON(" << DT_VERTS_PER_POLYGON
+                << "), so cannot build the Detour NavMesh. Aborting NavMesh "
+                   "construction.";
+    return false;
   }
 
   bounds_ = std::make_pair(vec3f(bmin), vec3f(bmax));
-
-  // Added as we also need to remove these on navmesh recomputation
-  removeZeroAreaPolys();
 
   ESP_DEBUG() << "Created navmesh with" << ws.pmesh->nverts << "vertices"
               << ws.pmesh->npolys << "polygons";
@@ -686,7 +928,7 @@ bool PathFinder::Impl::build(const NavMeshSettings& bs,
 
 bool PathFinder::Impl::initNavQuery() {
   // if we are reinitializing the NavQuery, then also reset the MeshData
-  meshData_.reset();
+  islandMeshData_.clear();
 
   navQuery_.reset(dtAllocNavMeshQuery());
   dtStatus status = navQuery_->init(navMesh_.get(), 2048);
@@ -697,6 +939,9 @@ bool PathFinder::Impl::initNavQuery() {
 
   islandSystem_ =
       std::make_unique<impl::IslandSystem>(navMesh_.get(), filter_.get());
+
+  // Added as we also need to remove these on navmesh recomputation
+  islandSystem_->removeZeroAreaPolys(navMesh_.get());
 
   return true;
 }
@@ -793,35 +1038,51 @@ float polyArea(const dtPoly* poly, const dtMeshTile* tile) {
 // Some polygons have zero area for some reason.  When we navigate into a zero
 // area polygon, things crash.  So we find all zero area polygons and mark
 // them as disabled/not navigable.
-// Also compute the total NavMesh area for later query.
-void PathFinder::Impl::removeZeroAreaPolys() {
-  navMeshArea_ = 0;
+// Also compute the NavMesh areas for later query.
+void impl::IslandSystem::removeZeroAreaPolys(dtNavMesh* navMesh) {
+  islandsToArea_ = std::unordered_map<uint32_t, float>();
+  islandsToArea_.reserve(islandsToPolys_.size());
+  // initialize the area cache.
+  for (auto& itr : islandsToPolys_) {
+    islandsToArea_[itr.first] = 0.0;
+  }
   // Iterate over all tiles
-  for (int iTile = 0; iTile < navMesh_->getMaxTiles(); ++iTile) {
+  for (int iTile = 0; iTile < navMesh->getMaxTiles(); ++iTile) {
     const dtMeshTile* tile =
-        const_cast<const dtNavMesh*>(navMesh_.get())->getTile(iTile);
+        const_cast<const dtNavMesh*>(navMesh)->getTile(iTile);
     if (!tile)
       continue;
 
     // Iterate over all polygons in a tile
     for (int jPoly = 0; jPoly < tile->header->polyCount; ++jPoly) {
       // Get the polygon reference from the tile and polygon id
-      dtPolyRef polyRef = navMesh_->encodePolyId(tile->salt, iTile, jPoly);
+      dtPolyRef polyRef = navMesh->encodePolyId(tile->salt, iTile, jPoly);
       const dtPoly* poly = nullptr;
       const dtMeshTile* tmp = nullptr;
-      navMesh_->getTileAndPolyByRefUnsafe(polyRef, &tmp, &poly);
+      navMesh->getTileAndPolyByRefUnsafe(polyRef, &tmp, &poly);
 
       CORRADE_INTERNAL_ASSERT(poly != nullptr);
       CORRADE_INTERNAL_ASSERT(tmp != nullptr);
 
       float polygonArea = polyArea(poly, tile);
       if (polygonArea < 1e-5) {
-        navMesh_->setPolyFlags(polyRef, POLYFLAGS_DISABLED);
+        navMesh->setPolyFlags(polyRef, POLYFLAGS_DISABLED);
       } else if ((poly->flags & POLYFLAGS_WALK) != 0) {
-        navMeshArea_ += polygonArea;
+        islandsToArea_[polyToIsland_[polyRef]] += polygonArea;
       }
     }
   }
+
+  // total of all island areas
+  float totalArea = 0;
+  for (auto& itr : islandsToArea_) {
+    totalArea += itr.second;
+  }
+  islandsToArea_[ID_UNDEFINED] = totalArea;
+}
+
+int PathFinder::Impl::numIslands() {
+  return islandSystem_->numIslands();
 }
 
 bool PathFinder::Impl::loadNavMesh(const std::string& path) {
@@ -907,8 +1168,6 @@ bool PathFinder::Impl::loadNavMesh(const std::string& path) {
   navMesh_.reset(mesh);
   bounds_ = std::make_pair(bmin, bmax);
 
-  removeZeroAreaPolys();
-
   return initNavQuery();
 }
 
@@ -971,14 +1230,26 @@ static float frand() {
   return static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
 }
 
-vec3f PathFinder::Impl::getRandomNavigablePoint(const int maxTries /*= 10*/) {
-  if (getNavigableArea() <= 0.0)
+vec3f PathFinder::Impl::getRandomNavigablePoint(
+    const int maxTries /*= 10*/,
+    int islandIndex /*= ID_UNDEFINED*/) {
+  islandSystem_->assertValidIsland(islandIndex);
+  if (getNavigableArea(islandIndex) <= 0.0)
     throw std::runtime_error(
         "NavMesh has no navigable area, this indicates an issue with the "
         "NavMesh");
 
-  vec3f pt;
+  // If this query should be island specific
+  if (islandIndex != ID_UNDEFINED) {
+    // set the poly flag to identify polys not on the target island
+    islandSystem_->setPolyFlagForIsland(
+        navMesh_.get(), PolyFlags::POLYFLAGS_OFF_ISLAND, islandIndex,
+        /*setFlag=*/true, /*invert=*/true);
+    filter_->setExcludeFlags(filter_->getExcludeFlags() |
+                             PolyFlags::POLYFLAGS_OFF_ISLAND);
+  }
 
+  vec3f pt;
   int i = 0;
   for (i = 0; i < maxTries; ++i) {
     dtPolyRef ref = 0;
@@ -987,6 +1258,67 @@ vec3f PathFinder::Impl::getRandomNavigablePoint(const int maxTries /*= 10*/) {
     if (dtStatusSucceed(status))
       break;
   }
+
+  // Clean up if this query was island specific
+  if (islandIndex != ID_UNDEFINED) {
+    // reset the poly flag identifing polys off the target island
+    islandSystem_->setPolyFlagForIsland(
+        navMesh_.get(), PolyFlags::POLYFLAGS_OFF_ISLAND, islandIndex,
+        /*setFlag=*/false, /*invert=*/true);
+    filter_->setExcludeFlags(filter_->getExcludeFlags() &
+                             ~PolyFlags::POLYFLAGS_OFF_ISLAND);
+  }
+
+  if (i == maxTries) {
+    ESP_ERROR() << "Failed to getRandomNavigablePoint.  Try increasing max "
+                   "tries if the navmesh is fine but just hard to sample from";
+    return vec3f::Constant(Mn::Constants::nan());
+  }
+  return pt;
+}
+
+vec3f PathFinder::Impl::getRandomNavigablePointInCircle(
+    const vec3f& circleCenter,
+    const float radius,
+    const int maxTries,
+    int islandIndex) {
+  float radSqr = radius * radius;
+
+  islandSystem_->assertValidIsland(islandIndex);
+  if (getNavigableArea(islandIndex) <= 0.0)
+    throw std::runtime_error(
+        "NavMesh has no navigable area, this indicates an issue with the "
+        "NavMesh");
+
+  // set the poly flag to identify polys not on the target island
+  islandSystem_->setPolyFlagForIslandCircle(navMesh_.get(),
+                                            PolyFlags::POLYFLAGS_OFF_ISLAND,
+                                            circleCenter, radius, islandIndex);
+  filter_->setExcludeFlags(filter_->getExcludeFlags() |
+                           PolyFlags::POLYFLAGS_OFF_ISLAND);
+
+  vec3f pt;
+  int i = 0;
+  for (i = 0; i < maxTries; ++i) {
+    dtPolyRef ref = 0;
+    dtStatus status =
+        navQuery_->findRandomPoint(filter_.get(), frand, &ref, pt.data());
+    if (dtStatusSucceed(status)) {
+      float xd = circleCenter[0] - pt[0];
+      float yd = circleCenter[2] - pt[2];
+      float d2 = xd * xd + yd * yd;
+      if (d2 < radSqr) {
+        break;
+      }
+    }
+  }
+
+  // reset the poly flag identifying polys off the target island
+  islandSystem_->setPolyFlagForIsland(
+      navMesh_.get(), PolyFlags::POLYFLAGS_OFF_ISLAND, ID_UNDEFINED,
+      /*setFlag=*/false, /*invert=*/true);
+  filter_->setExcludeFlags(filter_->getExcludeFlags() &
+                           ~PolyFlags::POLYFLAGS_OFF_ISLAND);
 
   if (i == maxTries) {
     ESP_ERROR() << "Failed to getRandomNavigablePoint.  Try increasing max "
@@ -999,31 +1331,58 @@ vec3f PathFinder::Impl::getRandomNavigablePoint(const int maxTries /*= 10*/) {
 vec3f PathFinder::Impl::getRandomNavigablePointAroundSphere(
     const vec3f& circleCenter,
     const float radius,
-    const int maxTries) {
-  if (getNavigableArea() <= 0.0)
+    const int maxTries,
+    int islandIndex) {
+  islandSystem_->assertValidIsland(islandIndex);
+  if (getNavigableArea(islandIndex) <= 0.0)
     throw std::runtime_error(
         "NavMesh has no navigable area, this indicates an issue with the "
         "NavMesh");
+
+  // If this query should be island specific
+  if (islandIndex != ID_UNDEFINED) {
+    // set the poly flag to identify polys not on the target island
+    islandSystem_->setPolyFlagForIsland(
+        navMesh_.get(), PolyFlags::POLYFLAGS_OFF_ISLAND, islandIndex,
+        /*setFlag=*/true, /*invert=*/true);
+    filter_->setExcludeFlags(filter_->getExcludeFlags() |
+                             PolyFlags::POLYFLAGS_OFF_ISLAND);
+  }
 
   vec3f pt = vec3f::Constant(Mn::Constants::nan());
   dtPolyRef start_ref = 0;  // ID to start our search
   dtStatus status = navQuery_->findNearestPoly(
       circleCenter.data(), vec3f{radius, radius, radius}.data(), filter_.get(),
       &start_ref, pt.data());
-  if (!dtStatusSucceed(status) || std::isnan(pt[0])) {
+
+  // cache and handle later to unify required clean-up
+  bool failedAndAborting = (!dtStatusSucceed(status) || std::isnan(pt[0]));
+
+  int i = 0;
+  if (!failedAndAborting) {
+    for (; i < maxTries; ++i) {
+      dtPolyRef rand_ref = 0;
+      status = navQuery_->findRandomPointAroundCircle(
+          start_ref, circleCenter.data(), radius, filter_.get(), frand,
+          &rand_ref, pt.data());
+      if (dtStatusSucceed(status) && (pt - circleCenter).norm() <= radius) {
+        break;
+      }
+    }
+  }
+  // Clean up if this query was island specific
+  if (islandIndex != ID_UNDEFINED) {
+    // reset the poly flag identifing polys off the target island
+    islandSystem_->setPolyFlagForIsland(
+        navMesh_.get(), PolyFlags::POLYFLAGS_OFF_ISLAND, islandIndex,
+        /*setFlag=*/false, /*invert=*/true);
+    filter_->setExcludeFlags(filter_->getExcludeFlags() &
+                             ~PolyFlags::POLYFLAGS_OFF_ISLAND);
+  }
+  if (failedAndAborting) {
     ESP_ERROR()
         << "Failed to getRandomNavigablePoint. No polygon found within radius";
     return vec3f::Constant(Mn::Constants::nan());
-  }
-  int i = 0;
-  for (; i < maxTries; ++i) {
-    dtPolyRef rand_ref = 0;
-    status = navQuery_->findRandomPointAroundCircle(
-        start_ref, circleCenter.data(), radius, filter_.get(), frand, &rand_ref,
-        pt.data());
-    if (dtStatusSucceed(status) && (pt - circleCenter).norm() <= radius) {
-      break;
-    }
   }
   if (i == maxTries) {
     ESP_ERROR() << "Failed to getRandomNavigablePoint.  Try increasing max "
@@ -1108,6 +1467,7 @@ bool PathFinder::Impl::findPathSetup(MultiGoalShortestPath& path,
                                      dtPolyRef& startRef,
                                      vec3f& pathStart) {
   path.geodesicDistance = std::numeric_limits<float>::infinity();
+  path.closestEndPointIndex = -1;
   path.points.clear();
 
   // find nearest polys and path
@@ -1122,6 +1482,7 @@ bool PathFinder::Impl::findPathSetup(MultiGoalShortestPath& path,
   if (!path.pimpl_->endRefs.empty())
     return true;
 
+  int numValidPoints = 0;
   for (const auto& rqEnd : path.getRequestedEnds()) {
     dtPolyRef endRef = 0;
     vec3f pathEnd;
@@ -1129,11 +1490,19 @@ bool PathFinder::Impl::findPathSetup(MultiGoalShortestPath& path,
         projectToPoly(rqEnd, navQuery_.get(), filter_.get());
 
     if (status != DT_SUCCESS || endRef == 0) {
-      return false;
+      path.pimpl_->endIsValid.emplace_back(false);
+      ESP_DEBUG() << "Can't project end-point to navmesh, skipping: " << rqEnd;
+    } else {
+      path.pimpl_->endIsValid.emplace_back(true);
+      numValidPoints++;
     }
 
     path.pimpl_->endRefs.emplace_back(endRef);
     path.pimpl_->pathEnds.emplace_back(pathEnd);
+  }
+  if (numValidPoints == 0) {
+    ESP_DEBUG() << "Early abort, can't project any points to navmesh.";
+    return false;
   }
 
   return true;
@@ -1175,6 +1544,9 @@ bool PathFinder::Impl::findPath(MultiGoalShortestPath& path) {
             });
 
   for (size_t i : ordering) {
+    if (!path.pimpl_->endIsValid[i])
+      continue;
+
     if (path.pimpl_->minTheoreticalDist[i] > path.geodesicDistance)
       continue;
 
@@ -1188,6 +1560,7 @@ bool PathFinder::Impl::findPath(MultiGoalShortestPath& path) {
       path.pimpl_->minTheoreticalDist[i] = std::get<0>(*findResult);
       path.geodesicDistance = std::get<0>(*findResult);
       path.points = std::get<1>(*findResult);
+      path.closestEndPointIndex = i;
     }
   }
 
@@ -1267,20 +1640,60 @@ T PathFinder::Impl::tryStep(const T& start, const T& end, bool allowSliding) {
     endPoint = endPoint + nudgeDistance * nudgeDir;
   }
 
-  return T{endPoint};
+  return T{std::move(endPoint)};
 }
 
 template <typename T>
-T PathFinder::Impl::snapPoint(const T& pt) {
+T PathFinder::Impl::snapPoint(const T& pt, int islandIndex /*=ID_UNDEFINED*/) {
+  islandSystem_->assertValidIsland(islandIndex);
+
+  // If this query should be island specific
+  if (islandIndex != ID_UNDEFINED) {
+    // set the poly flag to identify polys not on the target island
+    islandSystem_->setPolyFlagForIsland(
+        navMesh_.get(), PolyFlags::POLYFLAGS_OFF_ISLAND, islandIndex,
+        /*setFlag=*/true, /*invert=*/true);
+    filter_->setExcludeFlags(filter_->getExcludeFlags() |
+                             PolyFlags::POLYFLAGS_OFF_ISLAND);
+  }
+
   dtStatus status = 0;
   vec3f projectedPt;
   std::tie(status, std::ignore, projectedPt) =
       projectToPoly(pt, navQuery_.get(), filter_.get());
 
+  // Clean up if this query was island specific
+  if (islandIndex != ID_UNDEFINED) {
+    // reset the poly flag identifing polys off the target island
+    islandSystem_->setPolyFlagForIsland(
+        navMesh_.get(), PolyFlags::POLYFLAGS_OFF_ISLAND, islandIndex,
+        /*setFlag=*/false, /*invert=*/true);
+    filter_->setExcludeFlags(filter_->getExcludeFlags() &
+                             ~PolyFlags::POLYFLAGS_OFF_ISLAND);
+  }
+
   if (dtStatusSucceed(status)) {
-    return T{projectedPt};
+    return T{std::move(projectedPt)};
   }
   return {Mn::Constants::nan(), Mn::Constants::nan(), Mn::Constants::nan()};
+}
+
+template <typename T>
+int PathFinder::Impl::getIsland(const T& pt) const {
+  dtStatus status = 0;
+  vec3f projectedPt;
+  dtPolyRef polyRef = 0;
+  std::tie(status, polyRef, projectedPt) =
+      projectToPoly(pt, navQuery_.get(), filter_.get());
+
+  if (dtStatusSucceed(status)) {
+    return islandSystem_->getPolyIsland(polyRef);
+  }
+  return ID_UNDEFINED;
+}
+
+float PathFinder::Impl::islandRadius(int islandIndex) const {
+  return islandSystem_->islandRadius(islandIndex);
 }
 
 float PathFinder::Impl::islandRadius(const vec3f& pt) const {
@@ -1291,7 +1704,7 @@ float PathFinder::Impl::islandRadius(const vec3f& pt) const {
   if (status != DT_SUCCESS || ptRef == 0) {
     return 0.0;
   }
-  return islandSystem_->islandRadius(ptRef);
+  return islandSystem_->polyIslandRadius(ptRef);
 }
 
 float PathFinder::Impl::distanceToClosestObstacle(
@@ -1317,7 +1730,7 @@ HitRecord PathFinder::Impl::closestObstacleSurfacePoint(
   navQuery_->findDistanceToWall(ptRef, polyPt.data(), maxSearchRadius,
                                 filter_.get(), &hitDist, hitPos.data(),
                                 hitNormal.data());
-  return {hitPos, hitNormal, hitDist};
+  return {std::move(hitPos), std::move(hitNormal), hitDist};
 }
 
 bool PathFinder::Impl::isNavigable(const vec3f& pt,
@@ -1343,10 +1756,11 @@ typedef Eigen::Matrix<bool, Eigen::Dynamic, Eigen::Dynamic> MatrixXb;
 
 Eigen::Matrix<bool, Eigen::Dynamic, Eigen::Dynamic>
 PathFinder::Impl::getTopDownView(const float metersPerPixel,
-                                 const float height) const {
+                                 const float height,
+                                 const float eps) const {
   std::pair<vec3f, vec3f> mapBounds = bounds();
-  vec3f bound1 = mapBounds.first;
-  vec3f bound2 = mapBounds.second;
+  vec3f bound1 = std::move(mapBounds.first);
+  vec3f bound2 = std::move(mapBounds.second);
 
   float xspan = std::abs(bound1[0] - bound2[0]);
   float zspan = std::abs(bound1[2] - bound2[2]);
@@ -1361,7 +1775,7 @@ PathFinder::Impl::getTopDownView(const float metersPerPixel,
   for (int h = 0; h < zResolution; ++h) {
     for (int w = 0; w < xResolution; ++w) {
       vec3f point = vec3f(curx, height, curz);
-      topdownMap(h, w) = isNavigable(point, 0.5);
+      topdownMap(h, w) = isNavigable(point, eps);
       curx = curx + metersPerPixel;
     }
     curz = curz + metersPerPixel;
@@ -1371,11 +1785,52 @@ PathFinder::Impl::getTopDownView(const float metersPerPixel,
   return topdownMap;
 }
 
-assets::MeshData::ptr PathFinder::Impl::getNavMeshData() {
-  if (meshData_ == nullptr && isLoaded()) {
-    meshData_ = assets::MeshData::create();
-    std::vector<esp::vec3f>& vbo = meshData_->vbo;
-    std::vector<uint32_t>& ibo = meshData_->ibo;
+typedef Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic> MatrixXi;
+
+MatrixXi PathFinder::Impl::getTopDownIslandView(const float metersPerPixel,
+                                                const float height,
+                                                const float eps) const {
+  std::pair<vec3f, vec3f> mapBounds = bounds();
+  vec3f bound1 = std::move(mapBounds.first);
+  vec3f bound2 = std::move(mapBounds.second);
+
+  float xspan = std::abs(bound1[0] - bound2[0]);
+  float zspan = std::abs(bound1[2] - bound2[2]);
+  int xResolution = xspan / metersPerPixel;
+  int zResolution = zspan / metersPerPixel;
+  float startx = fmin(bound1[0], bound2[0]);
+  float startz = fmin(bound1[2], bound2[2]);
+  MatrixXi topdownMap(zResolution, xResolution);
+
+  float curz = startz;
+  float curx = startx;
+  for (int h = 0; h < zResolution; ++h) {
+    for (int w = 0; w < xResolution; ++w) {
+      vec3f point = vec3f(curx, height, curz);
+      if (isNavigable(point, eps)) {
+        // get the island
+        topdownMap(h, w) = getIsland(point);
+      } else {
+        topdownMap(h, w) = -1;
+      }
+      curx = curx + metersPerPixel;
+    }
+    curz = curz + metersPerPixel;
+    curx = startx;
+  }
+
+  return topdownMap;
+}
+
+assets::MeshData::ptr PathFinder::Impl::getNavMeshData(
+    int islandIndex /*= ID_UNDEFINED*/) {
+  islandSystem_->assertValidIsland(islandIndex);
+
+  if (islandMeshData_.find(islandIndex) == islandMeshData_.end() &&
+      isLoaded()) {
+    assets::MeshData::ptr curIslandMeshData = assets::MeshData::create();
+    std::vector<esp::vec3f>& vbo = curIslandMeshData->vbo;
+    std::vector<uint32_t>& ibo = curIslandMeshData->ibo;
 
     // Iterate over all tiles
     for (int iTile = 0; iTile < navMesh_->getMaxTiles(); ++iTile) {
@@ -1388,6 +1843,11 @@ assets::MeshData::ptr PathFinder::Impl::getNavMeshData() {
       for (int jPoly = 0; jPoly < tile->header->polyCount; ++jPoly) {
         // Get the polygon reference from the tile and polygon id
         dtPolyRef polyRef = navMesh_->encodePolyId(tile->salt, iTile, jPoly);
+        if (islandIndex != ID_UNDEFINED &&
+            islandSystem_->getPolyIsland(polyRef) != islandIndex) {
+          // skip polys not in the island.
+          continue;
+        }
         const dtPoly* poly = nullptr;
         const dtMeshTile* tmp = nullptr;
         navMesh_->getTileAndPolyByRefUnsafe(polyRef, &tmp, &poly);
@@ -1405,8 +1865,12 @@ assets::MeshData::ptr PathFinder::Impl::getNavMeshData() {
         }
       }
     }
+    // return newly added meshdata
+    return islandMeshData_.emplace(islandIndex, std::move(curIslandMeshData))
+        .first->second;
   }
-  return meshData_;
+  // meshdata already exists, so lookup and return
+  return islandMeshData_[islandIndex];
 }
 
 PathFinder::PathFinder() : pimpl_{spimpl::make_unique_impl<Impl>()} {};
@@ -1425,15 +1889,18 @@ bool PathFinder::build(const NavMeshSettings& bs,
   return pimpl_->build(bs, mesh);
 }
 
-vec3f PathFinder::getRandomNavigablePoint(const int maxTries /*= 10*/) {
-  return pimpl_->getRandomNavigablePoint(maxTries);
+vec3f PathFinder::getRandomNavigablePoint(const int maxTries /*= 10*/,
+                                          int islandIndex /*= ID_UNDEFINED*/) {
+  return pimpl_->getRandomNavigablePoint(maxTries, islandIndex);
 }
 
-vec3f PathFinder::getRandomNavigablePointAroundSphere(const vec3f& circleCenter,
-                                                      const float radius,
-                                                      const int maxTries) {
-  return pimpl_->getRandomNavigablePointAroundSphere(circleCenter, radius,
-                                                     maxTries);
+vec3f PathFinder::getRandomNavigablePointAroundSphere(
+    const vec3f& circleCenter,
+    const float radius,
+    const int maxTries,
+    int islandIndex /*= ID_UNDEFINED*/) {
+  return pimpl_->getRandomNavigablePointInCircle(circleCenter, radius, maxTries,
+                                                 islandIndex);
 }
 
 bool PathFinder::findPath(ShortestPath& path) {
@@ -1463,12 +1930,21 @@ T PathFinder::tryStepNoSliding(const T& start, const T& end) {
   return pimpl_->tryStep(start, end, /*allowSliding=*/false);
 }
 
-template vec3f PathFinder::snapPoint<vec3f>(const vec3f& pt);
-template Mn::Vector3 PathFinder::snapPoint<Mn::Vector3>(const Mn::Vector3& pt);
+template vec3f PathFinder::snapPoint<vec3f>(const vec3f& pt, int islandIndex);
+template Mn::Vector3 PathFinder::snapPoint<Mn::Vector3>(const Mn::Vector3& pt,
+                                                        int islandIndex);
+
+template int PathFinder::getIsland<vec3f>(const vec3f& pt);
+template int PathFinder::getIsland<Mn::Vector3>(const Mn::Vector3& pt);
 
 template <typename T>
-T PathFinder::snapPoint(const T& pt) {
-  return pimpl_->snapPoint(pt);
+T PathFinder::snapPoint(const T& pt, int islandIndex) {
+  return pimpl_->snapPoint(pt, islandIndex);
+}
+
+template <typename T>
+int PathFinder::getIsland(const T& pt) {
+  return pimpl_->getIsland(pt);
 }
 
 bool PathFinder::loadNavMesh(const std::string& path) {
@@ -1491,6 +1967,14 @@ float PathFinder::islandRadius(const vec3f& pt) const {
   return pimpl_->islandRadius(pt);
 }
 
+float PathFinder::islandRadius(int islandIndex) const {
+  return pimpl_->islandRadius(islandIndex);
+}
+
+int PathFinder::numIslands() const {
+  return pimpl_->numIslands();
+}
+
 float PathFinder::distanceToClosestObstacle(const vec3f& pt,
                                             const float maxSearchRadius) const {
   return pimpl_->distanceToClosestObstacle(pt, maxSearchRadius);
@@ -1506,8 +1990,8 @@ bool PathFinder::isNavigable(const vec3f& pt, const float maxYDelta) const {
   return pimpl_->isNavigable(pt, maxYDelta);
 }
 
-float PathFinder::getNavigableArea() const {
-  return pimpl_->getNavigableArea();
+float PathFinder::getNavigableArea(int islandIndex /*= ID_UNDEFINED*/) const {
+  return pimpl_->getNavigableArea(islandIndex);
 }
 
 std::pair<vec3f, vec3f> PathFinder::bounds() const {
@@ -1516,12 +2000,21 @@ std::pair<vec3f, vec3f> PathFinder::bounds() const {
 
 Eigen::Matrix<bool, Eigen::Dynamic, Eigen::Dynamic> PathFinder::getTopDownView(
     const float metersPerPixel,
-    const float height) {
-  return pimpl_->getTopDownView(metersPerPixel, height);
+    const float height,
+    const float eps) {
+  return pimpl_->getTopDownView(metersPerPixel, height, eps);
 }
 
-assets::MeshData::ptr PathFinder::getNavMeshData() {
-  return pimpl_->getNavMeshData();
+Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>
+PathFinder::getTopDownIslandView(const float metersPerPixel,
+                                 const float height,
+                                 const float eps) {
+  return pimpl_->getTopDownIslandView(metersPerPixel, height, eps);
+}
+
+assets::MeshData::ptr PathFinder::getNavMeshData(
+    int islandIndex /*= ID_UNDEFINED*/) {
+  return pimpl_->getNavMeshData(islandIndex);
 }
 
 Cr::Containers::Optional<NavMeshSettings> PathFinder::getNavMeshSettings()

@@ -1,9 +1,11 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-#include "SceneNode.h"
+#include <Corrade/Utility/Assert.h>
+
 #include "SceneGraph.h"
+#include "SceneNode.h"
 #include "esp/core/Check.h"
 #include "esp/geo/Geo.h"
 #include "esp/sensor/Sensor.h"
@@ -16,7 +18,10 @@ namespace scene {
 SceneNode::SceneNode()
     : Mn::SceneGraph::AbstractFeature3D{*this},
       nodeSensorSuite_(new esp::sensor::SensorSuite(*this)),
-      subtreeSensorSuite_(new esp::sensor::SensorSuite(*this)) {
+      subtreeSensorSuite_(new esp::sensor::SensorSuite(*this)),
+      semanticIDs_(
+          static_cast<int>(SceneNodeSemanticDataIDX::EndSemanticDataIDXs),
+          0) {
   setCachedTransformations(Mn::SceneGraph::CachedTransformation::Absolute);
   absoluteTransformation_ = absoluteTransformation();
   // Once created, nodeSensorSuite_ and subtreeSensorSuite_ are features owned
@@ -71,8 +76,8 @@ SceneNode& SceneNode::createChild(SceneNodeTags childNodeTags) {
             "SceneNode::createChild(): Can not create child from leaf node");
   // will set the parent to *this
   SceneNode* node = new SceneNode(*this);
-  node->setId(this->getId());
   node->setSceneNodeTags(childNodeTags);
+  node->setSemanticIDVector(this->getSemanticIDVector());
   return *node;
 }
 
@@ -237,6 +242,40 @@ const Mn::Range3D& SceneNode::getAbsoluteAABB() const {
           geo::getTransformedBB(getCumulativeBB(), absoluteTransformation_)};
     return *worldCumulativeBB_;
   }
+}
+
+void SceneNode::setSemanticIDVector(const std::vector<int>& _semanticIDs) {
+  if (semanticIDs_.size() < _semanticIDs.size()) {
+    semanticIDs_.resize(_semanticIDs.size());
+  }
+  std::copy(std::begin(_semanticIDs), std::end(_semanticIDs),
+            std::begin(semanticIDs_));
+}
+
+void setSemanticIdForSubtree(SceneNode* node, int semanticId) {
+  if (node->getSemanticId() == semanticId) {
+    // We assume the entire subtree's semanticId matches the root's, so we can
+    // early out here.
+    return;
+  }
+
+  // See also RigidBase setSemanticId. That function uses a prepared container
+  // of visual nodes, whereas this function traverses the subtree to touch all
+  // nodes (including visual nodes). The results should be the same.
+  auto cb = [&](SceneNode& node) { node.setSemanticId(semanticId); };
+  preOrderTraversalWithCallback(*node, cb);
+}
+
+void setSemanticInfoForSubtree(SceneNode* node,
+                               const std::vector<int>& _semanticIDs) {
+  if (node->getSemanticIDVector() == _semanticIDs) {
+    // We assume the entire subtree's semantic/instance ID vector matches the
+    // root's, so we can early out here.
+    return;
+  }
+
+  auto cb = [&](SceneNode& node) { node.setSemanticIDVector(_semanticIDs); };
+  preOrderTraversalWithCallback(*node, cb);
 }
 
 }  // namespace scene

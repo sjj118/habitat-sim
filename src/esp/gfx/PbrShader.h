@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -10,7 +10,7 @@
 #include <Corrade/Containers/ArrayView.h>
 #include <Corrade/Containers/EnumSet.h>
 #include <Magnum/GL/AbstractShaderProgram.h>
-#include <Magnum/GL/GL.h>  // header with all forward declarations for the Mn::GL namespace
+#include <Magnum/GL/GL.h>  // header with all forward declarations for the Magnum::GL namespace
 #include <Magnum/Shaders/GenericGL.h>
 
 #include "esp/core/Esp.h"
@@ -20,6 +20,8 @@ namespace gfx {
 
 class PbrShader : public Magnum::GL::AbstractShaderProgram {
  public:
+  // Configuration (See Magnum::Shaders::PhongGL::Configuration )
+  class Configuration;
   // ==== Attribute definitions ====
   /**
    * @brief vertex positions
@@ -32,6 +34,30 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   typedef Magnum::Shaders::GenericGL3D::Normal Normal;
 
   /**
+   * @brief Joint ids
+   * (See Magnum/Shaders/PhongGL.h)
+   */
+  typedef Magnum::Shaders::GenericGL3D::JointIds JointIds;
+
+  /**
+   * @brief Weights
+   * (See Magnum/Shaders/PhongGL.h)
+   */
+  typedef Magnum::Shaders::GenericGL3D::Weights Weights;
+
+  /**
+   * @brief Secondary joint ids
+   * (See Magnum/Shaders/PhongGL.h)
+   */
+  typedef Magnum::Shaders::GenericGL3D::SecondaryJointIds SecondaryJointIds;
+
+  /**
+   * @brief Secondary weights
+   * (See Magnum/Shaders/PhongGL.h)
+   */
+  typedef Magnum::Shaders::GenericGL3D::SecondaryWeights SecondaryWeights;
+
+  /**
    * @brief 2D texture coordinates
    *
    * Used only if at least one of
@@ -41,7 +67,8 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   typedef Magnum::Shaders::GenericGL3D::TextureCoordinates TextureCoordinates;
 
   /**
-   * @brief Tangent direction with the fourth component indicating the handness.
+   * @brief Tangent direction with the fourth component indicating the
+   * handedness.
    *
    * T = Tangent, B = BiTangent, N = Normal
    *
@@ -51,6 +78,11 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
    * Used only if @ref Flag::NormalTexture is set.
    */
   typedef Magnum::Shaders::GenericGL3D::Tangent4 Tangent4;
+
+  /**
+   * @brief Four-component vertex color
+   */
+  typedef Magnum::Shaders::GenericGL3D::Color4 Color4;
 
   enum : Magnum::UnsignedInt {
     /**
@@ -70,66 +102,47 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   };
 
   /**
-   * @brief Flag
+   * @brief Flags enums describing various features present in shader
    *
    * @see @ref Flags, @ref flags()
    */
-  enum class Flag : Magnum::UnsignedInt {
+  enum class Flag : Magnum::UnsignedLong {
     /**
      * Multiply base color with the baseColor texture.
      * @see @ref setBaseColor(), @ref bindBaseColorTexture()
      */
-    BaseColorTexture = 1 << 0,
+    BaseColorTexture = 1ULL << 0,
 
     /**
-     * Multiply roughness with the roughness texture.
-     * This flag term means the roughness texture is independent, and
-     * "roughness" is stored in the R channel of it.
-     * NOTE:
-     * if NoneRoughnessMetallicTexture or OcclusionRoughnessMetallicTexture are
-     * presented, this texture will be ignored.
-     * @see @ref setRoughness(), @ref bindRoughnessTexture()
-     */
-    RoughnessTexture = 1 << 1,
-
-    /**
-     * Multiply metallic with the metallic texture.
-     * This flag term means the metallic texture is independent, and "metalness"
-     * is stored in the R channel of it.
-     * NOTE:
-     * if NoneRoughnessMetallicTexture or OcclusionRoughnessMetallicTexture are
-     * presented, this texture will be ignored.
+     * This flag term means the NoneRoughnessMetallic texture is present, with
+     * the Roughness in G channel and metalness in B channel (R and Alpha
+     * channels are not used).
      * @see @ref setMetallic(), @ref bindMetallicTexture()
      */
-    MetallicTexture = 1 << 2,
+    NoneRoughnessMetallicTexture = 1ULL << 1,
 
     /*
-     * The occlusion map texture.
+     * The occlusion map texture is present.
      * The occlusion, Roughness and Metalness are packed together in one
      * texture, with Occlusion in R channel, Roughness in G channel and
      * metalness in B channel (Alpha channels is not used).
      */
-    PackedOcclusionTexture = 1 << 3,
-
-    /*
-     * The occlusion map texture.
-     * The occlusion map texture is separate from the metallicRoughness texture.
-     * The values are sampled from the R channel.
-     */
-    SeparateOcclusionTexture = 1 << 4,
+    OcclusionTexture = 1ULL << 2,
 
     /**
      * Modify normals according to a texture.
      */
-    NormalTexture = 1 << 5,
+    NormalTexture = 1ULL << 3,
 
     /**
-     * Enable normal texture scale
-     * the shader expects that
-     * @ref Flag::NormalTexture is enabled as well.
-     * @see @ref setNormalTextureScale
+     * emissive texture
      */
-    NormalTextureScale = 1 << 6,
+    EmissiveTexture = 1ULL << 4,
+
+    /**
+     * Support mesh vertex colors
+     */
+    VertexColor = 1ULL << 5,
 
     /**
      * Enable texture coordinate transformation. If this flag is set,
@@ -141,15 +154,10 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
      * @ref Flag::OcclusionRoughnessMetallicTexture is enabled as well.
      * @see @ref setTextureMatrix()
      */
-    TextureTransformation = 1 << 7,
+    TextureTransformation = 1ULL << 6,
 
     /**
-     * emissive texture
-     */
-    EmissiveTexture = 1 << 8,
-
-    /**
-     * TODO: Do we need instanced object? (instanced texture, istanced id etc.)
+     * TODO: Do we need instanced object? (instanced texture, instanced id etc.)
      */
 
     /**
@@ -164,35 +172,191 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
      * see PBR fragment shader code for more details
      * Requires the @ref Tangent4 attribute to be present.
      */
-    PrecomputedTangent = 1 << 10,
+    PrecomputedTangent = 1ULL << 7,
 
     /**
-     * Enable object ID output.
+     * Enable object ID output for this shader.
      */
-    ObjectId = 1 << 11,
+    ObjectId = 1ULL << 8,
+
+    /**
+     * Support Instanced object ID. Retrieves a per-instance / per-vertex
+     * object ID from the @ref ObjectId attribute. If this is false, the shader
+     * will use the node's semantic ID
+     */
+    InstancedObjectId = (1ULL << 9) | ObjectId,
+
+    /**
+     * Has ClearCoat layer.
+     */
+    ClearCoatLayer = 1ULL << 10,
+    /**
+     * Has ClearCoat Texture in ClearCoat layer
+     */
+    ClearCoatTexture = (1ULL << 11) | ClearCoatLayer,
+    /**
+     * Has Roughness Texture in ClearCoat layer
+     */
+    ClearCoatRoughnessTexture = (1ULL << 12) | ClearCoatLayer,
+    /**
+     * Has Normal Texture in ClearCoat layer
+     */
+    ClearCoatNormalTexture = (1ULL << 13) | ClearCoatLayer,
+
+    /**
+     * Has KHR_materials_specular layer
+     */
+    SpecularLayer = 1ULL << 14,
+    /**
+     * Has Specular Texture in KHR_materials_specular layer
+     */
+    SpecularLayerTexture = (1ULL << 15) | SpecularLayer,
+
+    /**
+     * Has Specular Color Texture in KHR_materials_specular layer
+     */
+    SpecularLayerColorTexture = (1ULL << 16) | SpecularLayer,
+
+    /**
+     * Has KHR_materials_anisotropy layer
+     */
+    AnisotropyLayer = 1ULL << 17,
+
+    /**
+     * Has Anisotropy Texture in KHR_materials_anisotropy layer
+     */
+    AnisotropyLayerTexture = (1ULL << 18) | AnisotropyLayer,
+
+    /**
+     * Has KHR_materials_transmission layer
+     */
+    TransmissionLayer = 1ULL << 19,
+    /**
+     * Has transmission texture in KHR_materials_transmission layer
+     */
+    TransmissionLayerTexture = (1ULL << 20) | TransmissionLayer,
+
+    /**
+     * Has KHR_materials_volume layer
+     */
+    VolumeLayer = 1ULL << 21,
+
+    /**
+     * Has Thickness texture in  KHR_materials_volume layer
+     */
+    VolumeLayerThicknessTexture = (1ULL << 22) | VolumeLayer,
 
     /**
      * Enable double-sided rendering.
-     * (Temporarily STOP supporting this functionality. See comments in
-     * the PbrDrawable::draw() function)
      */
-    DoubleSided = 1 << 12,
+    DoubleSided = 1ULL << 23,
+
+    /**
+     * Enable Skin rendering
+     */
+    SkinnedMesh = 1ULL << 23,
+
+    ///////////////////////////////
+    // PbrShaderAttributes provides these values to configure the shader
+
+    /**
+     * If not set, disable direct lighting regardless of presence of lights.
+     * Ignored if no direct lights present.
+     */
+    DirectLighting = 1ULL << 24,
 
     /**
      * Enable image based lighting
      */
-    ImageBasedLighting = 1 << 13,
+    ImageBasedLighting = 1ULL << 25,
 
     /**
-     * render point light shadows using variance shadow map (VSM)
+     * Whether or not the direct lighting diffuse calculation should use the
+     * Disney/Burley algorithm or the lambertian calculation. If set, the PBR
+     * shader uses a calc based on modified to be more energy conserving.
+     * https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf
+     * Lambertian is simpler and quicker to calculate but may not look as 'nice'
      */
-    ShadowsVSM = 1 << 14,
+    UseBurleyDiffuse = 1ULL << 26,
+
+    /**
+     * If set, skip TBN frame calculation in fragment shader. This calculation
+     * enables normal textures and anisotropy when no precomputed tangents are
+     * provided.
+     * TODO : implement in shader.
+     */
+    SkipMissingTBNCalc = 1ULL << 27,
+
+    /**
+     * Use the Mikkelsen algorithm to calculate TBN, as per
+     * https://jcgt.org/published/0009/03/04/paper.pdf. If not set,
+     * a simplified, faster method will be used to calculate the TBN frame,
+     * based on
+     * https://github.com/KhronosGroup/Vulkan-Samples/blob/main/shaders/pbr.frag,
+     * which empirically seems to give equivalent results.
+     */
+    UseMikkelsenTBN = 1ULL << 28,
+
+    /**
+     * Whether we should use shader-based srgb->linear approx remapping of
+     * applicable material color textures in PBR rendering for direct lighting
+     * and IBL. This field should be removed/ignored when Magnum fully supports
+     * sRGB texture conversion on load.
+     */
+    MapMatTxtrToLinear = 1ULL << 29,
+
+    /**
+     * Whether we should use shader-based srgb->linear approx remapping of
+     * applicable IBL environment textures in PBR rendering for IBL
+     * calculations. This field should be removed/ignored when Magnum fully
+     * supports sRGB texture conversion on load.
+     */
+    MapIBLTxtrToLinear = 1ULL << 30,
+
+    /**
+     * Whether we should use shader-based linear->srgb approx remapping of
+     * color output in PBR rendering for direct lighting and IBL results. This
+     * field should be removed/ignored when an appropriate framebuffer is used
+     * for output to handle this conversion.
+     */
+    MapOutputToSRGB = 1ULL << 31,
+
+    /**
+     * Whether or not to use tonemappping for direct lighting.
+     */
+    UseDirectLightTonemap = 1ULL << 32,
+
+    /**
+     * Whether or not to use tonemappping for image-based lighting.
+     */
+    UseIBLTonemap = 1ULL << 33,
+
+    ////////////////
+    // Testing and debugging
+    /**
+     * Whether we should skip all clearcoat layer calcs. Values will still be
+     * sent to the shader, but no actual calcuations will be performed if this
+     * is set.
+     */
+    SkipClearCoatLayer = 1ULL << 34,
+    /**
+     * Whether we should skip all specular layer calcs. Values will still be
+     * sent to the shader, but no actual calcuations will be performed if this
+     * is set.
+     */
+    SkipSpecularLayer = 1ULL << 35,
+    /**
+     * Whether we should skip all anisotropy layer calcs. Values will still be
+     * sent to the shader, but no actual calcuations will be performed if this
+     * is set.
+     */
+    SkipAnisotropyLayer = 1ULL << 36,
 
     /**
      * Enable shader debug mode. Then developer can set the uniform
      * PbrDebugDisplay in the fragment shader for debugging
      */
-    DebugDisplay = 1 << 15,
+    DebugDisplay = 1ULL << 37,
     /*
      * TODO: alphaMask
      */
@@ -205,25 +369,11 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
 
   /**
    * @brief Constructor
-   * @param flags         Flags
-   * @param lightCount    Count of light sources
+   * @param config : PbrShader::Configuration holding flags structure,
+   * number of lights, joints, etc.
    *
-   * By default,
-   *
-   * the shader provides a single directional "fill" light, coming
-   * from the center of the camera. Using the @p lightCount parameter in
-   * constructor, you can specify how many lights you want, and then control
-   * light parameters using @ref setLightVectors(), @ref setLightColors(),
-   * and @ref setLightRanges(). Light positions (directions)
-   * are specified as four-component vectors, the last component distinguishing
-   * between directional (w == 0) and point lights (w == 1.0).
-   *
-   * the shader renders the mesh with a white color in an identity
-   * transformation.
-   *
-   * the light range is set to Magnum::Constants::inf()
    */
-  explicit PbrShader(Flags flags = {}, unsigned int lightCount = 1);
+  explicit PbrShader(const Configuration& config);
 
   /** @brief Copying is not allowed */
   PbrShader(const PbrShader&) = delete;
@@ -240,7 +390,21 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   /**
    * @brief Get number of lights
    */
-  unsigned int lightCount() const { return lightCount_; }
+  Magnum::UnsignedInt lightCount() const { return lightCount_; }
+
+  /** @brief whether this shader as direct lighting enabled and there are lights
+   * defined.*/
+  bool directLightingIsEnabled() const { return directLightingIsEnabled_; }
+
+  /** @brief whether this shader has any lighting enabled, either direct or
+   * indirect/IBL.*/
+  bool lightingIsEnabled() const { return lightingIsEnabled_; }
+
+  /** @brief whether this shader has both direct lighting and IBL enabled.*/
+  bool directAndIBLIsEnabled() const { return directAndIBLisEnabled_; }
+
+  /** @brief whether any textures are present in this shader.*/
+  bool isTextured() const { return isTextured_; }
 
   /** @brief Flags */
   Flags flags() const { return flags_; }
@@ -271,6 +435,42 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   PbrShader& bindEmissiveTexture(Magnum::GL::Texture2D& texture);
 
   /**
+   * @brief Bind the clearcoat factor texture
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& bindClearCoatFactorTexture(Magnum::GL::Texture2D& texture);
+
+  /**
+   * @brief Bind the clearcoat roughness texture
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& bindClearCoatRoughnessTexture(Magnum::GL::Texture2D& texture);
+
+  /**
+   * @brief Bind the clearcoat normal texture
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& bindClearCoatNormalTexture(Magnum::GL::Texture2D& texture);
+
+  /**
+   * @brief Bind the specular layer texture
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& bindSpecularLayerTexture(Magnum::GL::Texture2D& texture);
+
+  /**
+   * @brief Bind the specular layer color texture
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& bindSpecularLayerColorTexture(Magnum::GL::Texture2D& texture);
+
+  /**
+   * @brief Bind the anisotropy layer texture
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& bindAnisotropyLayerTexture(Magnum::GL::Texture2D& texture);
+
+  /**
    * @brief Bind the irradiance cubemap texture
    * @return Reference to self (for method chaining)
    */
@@ -289,15 +489,6 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
    * @return Reference to self (for method chaining)
    */
   PbrShader& bindPrefilteredMap(Magnum::GL::CubeMapTexture& texture);
-
-  /**
-   * @brief Bind the point shadow map (cubemap texture)
-   * @param[in] idx, the index of the shadow map, can be 0, 1, or 2. (We allow
-   * at most 3 shadow maps.)
-   * NOTE: requires Flag::ShadowsPCF or Flag::ShadowsVSM is set
-   * @return Reference to self (for method chaining)
-   */
-  PbrShader& bindPointShadowMap(int idx, Magnum::GL::CubeMapTexture& texture);
 
   // ======== set uniforms ===========
   /**
@@ -355,6 +546,55 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   PbrShader& setMetallic(float metallic);
 
   /**
+   * @brief Set index of refraction.
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setIndexOfRefraction(float ior);
+
+  /**
+   * @brief Set clearcoat intensity/factor
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setClearCoatFactor(float ccFactor);
+
+  /**
+   * @brief Set clearcoat roughness
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setClearCoatRoughness(float ccRoughness);
+
+  /**
+   * @brief Set clearcoat normal texture scale
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setClearCoatNormalTextureScale(float ccTextureScale);
+
+  /**
+   * @brief Set specular layer factor
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setSpecularLayerFactor(float specLayerFactor);
+
+  /**
+   * @brief Set specular layer color factor
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setSpecularLayerColorFactor(const Magnum::Color3& color);
+
+  /**
+   * @brief Set anisotropy layer factor
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setAnisotropyLayerFactor(float anisoLayerFactor);
+
+  /**
+   * @brief Set anisotropy layer direction 2d vector
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setAnisotropyLayerDirection(
+      const Magnum::Vector2& anisoLayerDirection);
+
+  /**
    *  @brief Set object id to the uniform on GPU
    *  @return Reference to self (for method chaining)
    */
@@ -382,13 +622,13 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
    * when vec.w == 1, it means vec.xyz is the light position;
    * vec is an element in the "vectors" array
    */
-  PbrShader& setLightVectors(
+  PbrShader& setLightPositions(
       Corrade::Containers::ArrayView<const Magnum::Vector4> vectors);
 
   /**
    * @overload
    */
-  PbrShader& setLightVectors(std::initializer_list<Magnum::Vector4> vectors);
+  PbrShader& setLightPositions(std::initializer_list<Magnum::Vector4> vectors);
 
   /**
    *  @brief Set the position or direction of a specific light See @ref vec for
@@ -400,7 +640,7 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
    *              when vec.w == 1, it means vec.xyz is the light position;
    *  @return Reference to self (for method chaining)
    *  Note:
-   *  If the light was a directional (point) light, it will be overrided as a
+   *  If the light was a directional (point) light, it will be overridden as a
    *  point (directional) light
    */
   PbrShader& setLightVector(unsigned int lightIndex,
@@ -413,7 +653,7 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
    *  @param pos the position of the light in *camera* space
    *  @return Reference to self (for method chaining)
    *  Note:
-   *  If the light was a directional light, it will be overrided as a point
+   *  If the light was a directional light, it will be overridden as a point
    *  light;
    */
   PbrShader& setLightPosition(unsigned int lightIndex,
@@ -426,7 +666,7 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
    *  @param dir the direction of the light in *camera* space
    *  @return Reference to self (for method chaining)
    *  NOTE:
-   *  If the light was a point light, it will be overrided as a direction
+   *  If the light was a point light, it will be overridden as a direction
    * light;
    */
   PbrShader& setLightDirection(unsigned int lightIndex,
@@ -451,7 +691,7 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
    */
   PbrShader& setLightColor(unsigned int lightIndex,
                            const Magnum::Vector3& color,
-                           float intensity = 1.0);
+                           float intensity = 1.0f);
 
   /**
    *  @brief Set the colors of the lights
@@ -480,6 +720,28 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   PbrShader& setLightRanges(std::initializer_list<float> ranges);
 
   /**
+   * @brief Set the global lighting intensity applied equally across all lights
+   * for direct lighting.
+   *  @param lightIntensity config-driven global intensity knob to easily
+   * control the intensity of the entire scene by a single field
+   *  @return Reference to self (for method chaining)
+   */
+  PbrShader& setDirectLightIntensity(float lightIntensity);
+
+  /**
+   * @brief Set the gamma value used for remapping sRGB to linear approximations
+   *  @return Reference to self (for method chaining)
+   */
+  PbrShader& setGamma(const Magnum::Vector3& gamma);
+
+  /**
+   * @brief Set the IBL exposure value.
+   *  @param exposure config-driven exposure value for IBL calculations.
+   *  @return Reference to self (for method chaining)
+   */
+  PbrShader& setTonemapExposure(float exposure);
+
+  /**
    *  @brief Set the scale of the normal texture
    *  @param scale
    *  @return Reference to self (for method chaining)
@@ -487,17 +749,60 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   PbrShader& setNormalTextureScale(float scale);
 
   /**
-   * Toggles that control contributions from different components
+   * @brief Set joint matrices
+   * (See Magnum/Shaders/PhongGL.h)
+   * @return Reference to self (for method chaining)
+   */
+  PbrShader& setJointMatrices(
+      Corrade::Containers::ArrayView<const Magnum::Matrix4> matrices);
+
+  /**
+   * @overload
+   * (See Magnum/Shaders/PhongGL.h)
+   */
+  PbrShader& setJointMatrices(std::initializer_list<Magnum::Matrix4> matrices);
+
+  /**
+   * @brief Set joint matrix for given joint
+   * (See Magnum/Shaders/PhongGL.h)
+   * @return Reference to self (for method chaining)
+   * @m_since_latest
+   *
+   * Unlike @ref setJointMatrices() updates just a single joint matrix.
+   * Expects that @p id is less than @ref jointCount().
+   */
+  PbrShader& setJointMatrix(Magnum::UnsignedInt id,
+                            const Magnum::Matrix4& matrix);
+
+  /**
+   * @brief Set per-instance joint count
+   * (See Magnum/Shaders/PhongGL.h)
+   * @return Reference to self (for method chaining)
+   * @m_since_latest
+   *
+   * Offset added to joint IDs in the @ref JointIds and
+   * @ref SecondaryJointIds in instanced draws. Should be less than
+   * @ref jointCount(). Initial value is @cpp 0 @ce, meaning every
+   * instance will use the same joint matrices, setting it to a non-zero
+   * value causes the joint IDs to be interpreted as
+   * @glsl gl_InstanceID*count + jointId @ce.
+   *
+   */
+  PbrShader& setPerInstanceJointCount(Magnum::UnsignedInt count);
+
+  /**
+   * Toggles that control contributions from different components - should
+   * never be set to 0 or will cause warnings when the shader executes
    */
   struct PbrEquationScales {
-    float directDiffuse = 1.0f;
-    float directSpecular = 1.0f;
-    float iblDiffuse = 1.0f;
-    float iblSpecular = 1.0f;
+    float directDiffuse = 0.5f;
+    float directSpecular = 0.5f;
+    float iblDiffuse = 0.5f;
+    float iblSpecular = 0.5f;
   };
 
   /**
-   *  @brief Set the scales for differenct components in the pbr equation
+   *  @brief Set the scales for different components in the pbr equation
    *  @param scales
    *  @return Reference to self (for method chaining)
    */
@@ -505,12 +810,16 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
 
   enum class PbrDebugDisplay : uint8_t {
     None = 0,
+    // Direct Lighting Diffuse result
     DirectDiffuse = 1,
+    // Direct Lighting Specular result
     DirectSpecular = 2,
+    // IBL Diffuse result
     IblDiffuse = 3,
+    // IBL Specular result
     IblSpecular = 4,
+    // Normal vector
     Normal = 5,
-    Shadow0 = 6,
   };
   /**
    *@brief debug display visualization
@@ -519,7 +828,30 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
 
  protected:
   Flags flags_;
-  unsigned int lightCount_;
+  Magnum::UnsignedInt lightCount_{};
+  Magnum::UnsignedInt jointCount_{};
+  Magnum::UnsignedInt perVertexJointCount_{};
+  Magnum::UnsignedInt secondaryPerVertexJointCount_{};
+
+  // whether or not this shader has skin support
+  bool isSkinned_ = false;
+
+  // whether or not this shader uses any textures
+  bool isTextured_ = false;
+  // Whether or not there is lighting - either direct or indirect - used by this
+  // shader
+  bool lightingIsEnabled_ = false;
+
+  // Whether direct lighting is enabled and there are direct lights defined
+  bool directLightingIsEnabled_ = false;
+
+  // Whether direct _AND_ indirect lighting is available
+  bool directAndIBLisEnabled_ = false;
+
+  // Whether the any incoming textures should be remapped from sRGB to
+  // linear for calculations. This will determine whether or not uGamma is
+  // populated
+  bool mapInputToLinear_ = false;
 
   // ======= uniforms =======
   // it hurts the performance to call glGetUniformLocation() every frame due
@@ -532,29 +864,134 @@ class PbrShader : public Magnum::GL::AbstractShaderProgram {
   int baseColorUniform_ = ID_UNDEFINED;  // diffuse color
   int roughnessUniform_ = ID_UNDEFINED;  // roughness of a surface
   int metallicUniform_ = ID_UNDEFINED;
+  int iorUniform_ = ID_UNDEFINED;
   int emissiveColorUniform_ = ID_UNDEFINED;
   int objectIdUniform_ = ID_UNDEFINED;
   int textureMatrixUniform_ = ID_UNDEFINED;
   int normalTextureScaleUniform_ = ID_UNDEFINED;
-
   int lightColorsUniform_ = ID_UNDEFINED;
   int lightRangesUniform_ = ID_UNDEFINED;
+
+  int jointMatricesUniform_ = ID_UNDEFINED;
+
+  int perInstanceJointCountUniform_ = ID_UNDEFINED;
+
   // In the fragment shader, the "LightDirection" is a vec4.
   // when w == 0, it means .xyz is the light direction;
   // when w == 1, it means it is the light position, NOT the direction;
   int lightDirectionsUniform_ = ID_UNDEFINED;
+  // Global, config-driven knob to control direct lighting intensity
+  int directLightingIntensityUniform_ = ID_UNDEFINED;
+
+  // Global, config-driven knob to control IBL exposure
+  int tonemapExposureUniform_ = ID_UNDEFINED;
+
+  // Gamma value for sRGB->linear mapping approx
+  int gammaUniform_ = ID_UNDEFINED;
+  // invGamma value for linear->sRGB mapping approx
+  int invGammaUniform_ = ID_UNDEFINED;
 
   int cameraWorldPosUniform_ = ID_UNDEFINED;
   int prefilteredMapMipLevelsUniform_ = ID_UNDEFINED;
+
+  // Clearcoat layer
+  int clearCoatFactorUniform_ = ID_UNDEFINED;
+
+  int clearCoatTextureScaleUniform_ = ID_UNDEFINED;
+
+  int clearCoatRoughnessUniform_ = ID_UNDEFINED;
+
+  // Specular Layer
+  int specularLayerFactorUniform_ = ID_UNDEFINED;
+
+  int specularLayerColorFactorUniform_ = ID_UNDEFINED;
+
+  int anisotropyLayerFactorUniform_ = ID_UNDEFINED;
+
+  int anisotropyLayerDirectionUniform_ = ID_UNDEFINED;
 
   // scales
   int componentScalesUniform_ = ID_UNDEFINED;
 
   // pbr debug info
   int pbrDebugDisplayUniform_ = ID_UNDEFINED;
+};
 
-  /** @brief return true if direct lights or image based lighting is enabled. */
-  inline bool lightingIsEnabled() const;
+/**
+ * @brief PBR Shader configuration
+ */
+class PbrShader::Configuration {
+ public:
+  explicit Configuration() = default;
+
+  /** @brief Flags */
+  Flags flags() const { return _flags; }
+
+  /**
+   * @brief Set flags
+   */
+  Configuration& setFlags(Flags flags) {
+    _flags = flags;
+    return *this;
+  }
+
+  /** @brief Light count */
+  Magnum::UnsignedInt lightCount() const { return _lightCount; }
+
+  /**
+   * @brief Set light count
+   */
+  Configuration& setLightCount(Magnum::UnsignedInt count) {
+    _lightCount = count;
+    return *this;
+  }
+
+  /**
+   * @brief Joint count
+   */
+  Magnum::UnsignedInt jointCount() const { return _jointCount; }
+
+  /**
+   * @brief Per-vertex joint count
+   */
+  Magnum::UnsignedInt perVertexJointCount() const {
+    return _perVertexJointCount;
+  }
+
+  /**
+   *@brief Secondary per-vertex joint count
+   */
+  Magnum::UnsignedInt secondaryPerVertexJointCount() const {
+    return _secondaryPerVertexJointCount;
+  }
+
+  /**
+   * @brief Set joint count
+   *
+   * @p count describes an upper bound on how many joint matrices get supplied
+   * to each draw with
+   * @ref setJointMatrices() / @ref setJointMatrix().
+   *
+   * The @p perVertexCount and @p secondaryPerVertexCount parameters
+   * describe how many components are taken from @ref JointIds /
+   * @ref Weights and @ref SecondaryJointIds / @ref SecondaryWeights
+   * attributes. Both values are expected to not be larger than
+   * @cpp 4 @ce, setting either of these to @cpp 0 @ce means given
+   * attribute is not used at all. If both @p perVertexCount and
+   * @p secondaryPerVertexCount are set to @cpp 0 @ce, skinning is not
+   * performed.
+   *
+   * Default value for all three is @cpp 0 @ce.
+   */
+  Configuration& setJointCount(Magnum::UnsignedInt count,
+                               Magnum::UnsignedInt perVertexCount,
+                               Magnum::UnsignedInt secondaryPerVertexCount = 0);
+
+ private:
+  Flags _flags;
+  Magnum::UnsignedInt _lightCount = 1, _jointCount = 0,
+                      _perVertexJointCount = 0,
+                      _secondaryPerVertexJointCount = 0;
 };
 
 CORRADE_ENUMSET_OPERATORS(PbrShader::Flags)

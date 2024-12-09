@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -7,10 +7,14 @@
 #ifndef ESP_PHYSICS_URDFIMPORTER_H_
 #define ESP_PHYSICS_URDFIMPORTER_H_
 
-#include "esp/assets/ResourceManager.h"
+#include "esp/metadata/URDFParser.h"
+#include "esp/metadata/attributes/ArticulatedObjectAttributes.h"
 
-#include "esp/io/URDFParser.h"
 namespace esp {
+namespace assets {
+class ResourceManager;
+}
+
 namespace physics {
 
 enum ConvertURDFFlags {
@@ -46,27 +50,19 @@ class URDFImporter {
       : resourceManager_(resourceManager){};
 
   virtual ~URDFImporter() = default;
-
   /**
    * @brief Sets the activeModel_ for the importer. If new or forceReload, parse
    * a URDF file and cache the resulting model. Note: when applying uniform
    * scaling to a 3D model consider scale^3 mass scaling to approximate uniform
    * density.
-   * @param filename The filepath for the URDF and key for the cached model.
-   * @param globalScale A global, uniform 3D scale. Does not affect mass. Can be
-   * applied to update cached models.
-   * @param massScale A uniform scaling of link masses. Can be applied to update
-   * cached models.
+   * @param urdfFilepath The filepath for the URDF and key for the cached model.
    * @param forceReload If true, reload the URDF from file, replacing the cached
    * model.
    */
-  bool loadURDF(const std::string& filename,
-                float globalScale = 1.0,
-                float massScale = 1.0,
-                bool forceReload = false);
+  bool loadURDF(const std::string& urdfFilepath, bool forceReload = false);
 
   // NOTE: all of these getter/setters act on the current "activeModel_"
-  virtual std::shared_ptr<io::URDF::Model> getModel() const {
+  virtual std::shared_ptr<metadata::URDF::Model> getModel() const {
     return activeModel_;
   };
 
@@ -90,8 +86,9 @@ class URDFImporter {
   virtual void getLinkChildIndices(int linkIndex,
                                    std::vector<int>& childLinkIndices) const;
 
-  virtual bool getLinkContactInfo(int linkIndex,
-                                  io::URDF::LinkContactInfo& contactInfo) const;
+  virtual bool getLinkContactInfo(
+      int linkIndex,
+      metadata::URDF::LinkContactInfo& contactInfo) const;
 
   // TODO: refactor this nonsense
   virtual bool getJointInfo(int linkIndex,
@@ -103,26 +100,22 @@ class URDFImporter {
                             float& jointUpperLimit,
                             float& jointDamping,
                             float& jointFriction) const;
-  virtual bool getJointInfo2(int linkIndex,
-                             Magnum::Matrix4& parent2joint,
-                             Magnum::Matrix4& linkTransformInWorld,
-                             Magnum::Vector3& jointAxisInJointSpace,
-                             int& jointType,
-                             float& jointLowerLimit,
-                             float& jointUpperLimit,
-                             float& jointDamping,
-                             float& jointFriction,
-                             float& jointMaxForce,
-                             float& jointMaxVelocity) const;
+  virtual bool getJointInfo(int linkIndex,
+                            Magnum::Matrix4& parent2joint,
+                            Magnum::Matrix4& linkTransformInWorld,
+                            Magnum::Vector3& jointAxisInJointSpace,
+                            int& jointType,
+                            float& jointLowerLimit,
+                            float& jointUpperLimit,
+                            float& jointDamping,
+                            float& jointFriction,
+                            float& jointMaxForce,
+                            float& jointMaxVelocity) const;
 
   virtual void getMassAndInertia(int linkIndex,
                                  float& mass,
                                  Magnum::Vector3& localInertiaDiagonal,
                                  Magnum::Matrix4& inertialFrame) const;
-  virtual void getMassAndInertia2(int linkIndex,
-                                  float& mass,
-                                  Magnum::Vector3& localInertiaDiagonal,
-                                  Magnum::Matrix4& inertialFrame) const;
 
   // This is no longer used, instead set the urdf subsystem to veryverbose,
   // i.e. export HABITAT_SIM_LOG="urdf=veryverbose"
@@ -140,9 +133,11 @@ class URDFImporter {
 
   /**
    * @brief Load/import any required render and collision assets for the
-   * acrive io::URDF::Model before instantiating it.
+   * acrive metadata::URDF::Model before instantiating it.
    */
-  void importURDFAssets();
+  void importURDFAssets(
+      const esp::metadata::attributes::ArticulatedObjectAttributes::ptr&
+          artObjAttributes);
 
   //! importer model conversion flags
   int flags = 0;
@@ -150,16 +145,16 @@ class URDFImporter {
  protected:
   // parses the URDF file into general, simulation platform invariant
   // datastructures
-  io::URDF::Parser urdfParser_;
+  metadata::URDF::Parser urdfParser_;
 
   esp::assets::ResourceManager& resourceManager_;
 
   //! cache parsed URDF models by filename
-  std::map<std::string, std::shared_ptr<io::URDF::Model>> modelCache_;
+  std::map<std::string, std::shared_ptr<metadata::URDF::Model>> modelCache_;
 
   //! which model is being actively manipulated. Changed by calling
   //! loadURDF(filename).
-  std::shared_ptr<io::URDF::Model> activeModel_ = nullptr;
+  std::shared_ptr<metadata::URDF::Model> activeModel_ = nullptr;
 };
 
 }  // namespace physics

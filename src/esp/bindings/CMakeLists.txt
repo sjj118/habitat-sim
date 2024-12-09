@@ -1,4 +1,24 @@
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 find_package(MagnumBindings REQUIRED Python)
+
+find_package(
+  MagnumPlugins
+  REQUIRED
+  BasisImporter
+  GltfImporter
+  KtxImporter
+  PrimitiveImporter
+  StanfordImporter
+  StbImageImporter
+  StbImageConverter
+  UfbxImporter
+)
+if(BUILD_ASSIMP_SUPPORT)
+  find_package(MagnumPlugins REQUIRED AssimpImporter)
+endif()
 
 pybind11_add_module(
   habitat_sim_bindings
@@ -24,17 +44,20 @@ pybind11_add_module(
 target_link_libraries(
   habitat_sim_bindings
   PRIVATE MagnumBindings::Python
-  PUBLIC agent
-         assets
-         scene
-         core
-         gfx
-         metadata
-         nav
-         sensor
-         physics
-         sim
+          MagnumPlugins::BasisImporter
+          MagnumPlugins::GltfImporter
+          MagnumPlugins::KtxImporter
+          MagnumPlugins::StanfordImporter
+          MagnumPlugins::StbImageImporter
+          MagnumPlugins::StbImageConverter
+          MagnumPlugins::UfbxImporter
+  PUBLIC habitat_sim
 )
+if(BUILD_ASSIMP_SUPPORT)
+  target_link_libraries(
+    habitat_sim_bindings PUBLIC MagnumPlugins::AssimpImporter PRIVATE Assimp::Assimp
+  )
+endif()
 
 if(BUILD_WITH_AUDIO)
   add_custom_command(

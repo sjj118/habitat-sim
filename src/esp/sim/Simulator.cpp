@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -21,14 +21,15 @@
 #include "esp/gfx/PbrDrawable.h"
 #include "esp/gfx/RenderCamera.h"
 #include "esp/gfx/Renderer.h"
-#include "esp/gfx/VarianceShadowMapDrawable.h"
 #include "esp/gfx/replay/Recorder.h"
 #include "esp/gfx/replay/ReplayManager.h"
-#include "esp/metadata/attributes/AttributesBase.h"
+#include "esp/metadata/MetadataMediator.h"
+#include "esp/metadata/attributes/AbstractAttributes.h"
 #include "esp/nav/PathFinder.h"
 #include "esp/physics/PhysicsManager.h"
 #include "esp/physics/bullet/BulletCollisionHelper.h"
-#include "esp/scene/ObjectControls.h"
+#include "esp/physics/objectManagers/ArticulatedObjectManager.h"
+#include "esp/physics/objectManagers/RigidObjectManager.h"
 #include "esp/sensor/CameraSensor.h"
 #include "esp/sensor/SensorFactory.h"
 #include "esp/sensor/VisualSensor.h"
@@ -37,19 +38,12 @@ namespace Cr = Corrade;
 
 namespace esp {
 namespace sim {
-
+using metadata::attributes::AssetType;
 using metadata::attributes::PhysicsManagerAttributes;
 using metadata::attributes::SceneAOInstanceAttributes;
 using metadata::attributes::SceneObjectInstanceAttributes;
+using metadata::attributes::SemanticAttributes;
 using metadata::attributes::StageAttributes;
-
-namespace {
-constexpr const char* shadowMapDrawableGroupName = "static-shadow-map";
-constexpr const char* defaultRenderingGroupName = "";
-const int shadowMapSize = 1024;
-const int maxNumShadowMaps = 3;  // the max number of point shadow maps
-
-};  // namespace
 
 Simulator::Simulator(const SimulatorConfiguration& cfg,
                      metadata::MetadataMediator::ptr _metadataMediator)
@@ -73,7 +67,6 @@ void Simulator::close(const bool destroy) {
   pathfinder_ = nullptr;
   navMeshVisPrimID_ = esp::ID_UNDEFINED;
   navMeshVisNode_ = nullptr;
-  agents_.clear();
 
   physicsManager_ = nullptr;
   curSceneInstanceAttributes_ = nullptr;
@@ -108,6 +101,17 @@ void Simulator::close(const bool destroy) {
 }
 
 void Simulator::reconfigure(const SimulatorConfiguration& cfg) {
+// Fail early if physics is enabled in config but no bullet support is
+// installed.
+#ifndef ESP_BUILD_WITH_BULLET
+  ESP_CHECK(!cfg.enablePhysics,
+            "Physics has been enabled in the SimulatorConfiguration but "
+            "Habitat-Sim was not built with Bullet support enabled. Either set "
+            "cfg.enable_physics to False, or verify your Bullet installation "
+            "(e.g recompile Habitat-Sim using the '--bullet' flag or choose a "
+            "'withbullet' conda build.)");
+#endif
+
   // set metadata mediator's cfg  upon creation or reconfigure
   if (!metadataMediator_) {
     metadataMediator_ = metadata::MetadataMediator::create(cfg);
@@ -117,12 +121,8 @@ void Simulator::reconfigure(const SimulatorConfiguration& cfg) {
 
   // assign MM to RM on create or reconfigure
   if (!resourceManager_) {
-    assets::ResourceManager::Flags flags{};
-    if (cfg.pbrImageBasedLighting) {
-      flags |= assets::ResourceManager::Flag::PbrImageBasedLighting;
-    }
     resourceManager_ =
-        std::make_unique<assets::ResourceManager>(metadataMediator_, flags);
+        std::make_unique<assets::ResourceManager>(metadataMediator_);
     // needs to be called after ResourceManager exists but before any assets
     // have been loaded
     reconfigureReplayManager(cfg.enableGfxReplaySave);
@@ -130,18 +130,23 @@ void Simulator::reconfigure(const SimulatorConfiguration& cfg) {
     resourceManager_->setMetadataMediator(metadataMediator_);
   }
 
+  // reset this count and number here because we are resetting (clearing) the
+  // scene
+  resourceManager_->resetDrawableCountAndNumFaces();
+
   if (!sceneManager_) {
     sceneManager_ = scene::SceneManager::create_unique();
   }
 
+  // This is a check to make sure that pathfinder_ is not null after
+  // a reconfigure. We check to see if it's null so that an existing
+  // one isn't overwritten.
+  if (!pathfinder_) {
+    pathfinder_ = nav::PathFinder::create();
+  }
+
   // if configuration is unchanged, just reset and return
   if (cfg == config_) {
-    // This is a check to make sure that pathfinder_ is not null after
-    // a reconfigure. We check to see if it's null so that an existing
-    // one isn't overwritten.
-    if (!pathfinder_) {
-      pathfinder_ = nav::PathFinder::create();
-    }
     reset();
     return;
   }
@@ -179,24 +184,23 @@ void Simulator::reconfigure(const SimulatorConfiguration& cfg) {
         flags |= gfx::Renderer::Flag::NoTextures;
 
 #ifdef ESP_BUILD_WITH_BACKGROUND_RENDERER
-      if (context_)
+      if (context_) {
         flags |= gfx::Renderer::Flag::BackgroundRenderer;
+      }
 
-      if (context_ && config_.leaveContextWithBackgroundRenderer)
+      if (context_ && config_.leaveContextWithBackgroundRenderer) {
         flags |= gfx::Renderer::Flag::LeaveContextWithBackgroundRenderer;
+      }
 #endif
+
+      if (config_.enableHBAO) {
+        flags |= gfx::Renderer::Flag::HorizonBasedAmbientOcclusion;
+      }
 
       renderer_ = gfx::Renderer::create(context_.get(), flags);
     }
-#ifndef CORRADE_TARGET_EMSCRIPTEN
     flextGLInit(Magnum::GL::Context::current());
-#endif
     renderer_->acquireGlContext();
-  } else {
-    CORRADE_ASSERT(
-        !Magnum::GL::Context::hasCurrent(),
-        "Simulator::reconfigure() : Unexpected existing context when "
-        "createRenderer==false", );
   }
 
   // (re) create scene instance
@@ -207,6 +211,18 @@ void Simulator::reconfigure(const SimulatorConfiguration& cfg) {
               << "for active scene name :" << config_.activeSceneName
               << (config_.createRenderer ? " with" : " without") << "renderer.";
 
+  // Handle the NavMesh configuration
+  if (config_.navMeshSettings != nullptr &&
+      Cr::Utility::String::lowercase(config_.activeSceneName) != "none") {
+    // If the NavMesh is unloaded or does not match the requested configuration
+    // then recompute it.
+    if (!pathfinder_->isLoaded() ||
+        (pathfinder_->getNavMeshSettings() != *config_.navMeshSettings)) {
+      ESP_DEBUG() << "NavMesh recompute was necessary.";
+      recomputeNavMesh(*pathfinder_, *config_.navMeshSettings);
+    }
+  }
+
 }  // Simulator::reconfigure
 
 bool Simulator::createSceneInstance(const std::string& activeSceneName) {
@@ -215,7 +231,7 @@ bool Simulator::createSceneInstance(const std::string& activeSceneName) {
   // 1. initial setup for scene instancing - sets or creates the
   // current scene instance to correspond to the given name.
 
-  // Get scene instance attributes corresponding to passed active scene name
+  // Get Scene Instance Attributes corresponding to passed active scene name
   // This will retrieve, or construct, an appropriately configured scene
   // instance attributes, depending on what exists in the Scene Dataset library
   // for the current dataset.
@@ -230,26 +246,45 @@ bool Simulator::createSceneInstance(const std::string& activeSceneName) {
           "instance :{} failed due to scene instance not being found. Aborting",
           activeSceneName));
 
-  // 2. Load navmesh specified in current scene instance attributes.
-  const std::string& navmeshFileLoc = metadataMediator_->getNavmeshPathByHandle(
-      curSceneInstanceAttributes_->getNavmeshHandle());
+  // 2. Load navmesh specified in current Scene Instance Attributes.
 
-  ESP_DEBUG() << "Navmesh file location in scene instance :" << navmeshFileLoc;
-  // Get name of navmesh and use to create pathfinder and load navmesh
+  const std::string& navmeshFileHandle =
+      curSceneInstanceAttributes_->getNavmeshHandle();
   // create pathfinder and load navmesh if available
   pathfinder_ = nav::PathFinder::create();
-  if (Cr::Utility::Path::exists(navmeshFileLoc)) {
-    ESP_DEBUG() << "Loading navmesh from" << navmeshFileLoc;
-    bool pfSuccess = pathfinder_->loadNavMesh(navmeshFileLoc);
-    ESP_DEBUG() << (pfSuccess ? "Navmesh Loaded." : "Navmesh load error.");
+  if (navmeshFileHandle.empty()) {
+    ESP_DEBUG() << "No navmesh file handle provided in scene instance.";
+
   } else {
-    ESP_WARNING(Mn::Debug::Flag::NoSpace)
-        << "Navmesh file not found, checked at filename : '" << navmeshFileLoc
-        << "'";
+    const std::string& navmeshFileLoc =
+        metadataMediator_->getNavmeshPathByHandle(navmeshFileHandle);
+    // Get name of navmesh and use to create pathfinder and load navmesh
+    if (navmeshFileLoc.empty()) {
+      ESP_DEBUG() << "No navmesh file location provided in scene dataset that "
+                     "maps to handle :"
+                  << navmeshFileHandle;
+    } else if (Cr::Utility::Path::exists(navmeshFileLoc)) {
+      ESP_DEBUG() << "Loading navmesh from" << navmeshFileLoc;
+      bool pfSuccess = pathfinder_->loadNavMesh(navmeshFileLoc);
+      ESP_DEBUG() << (pfSuccess ? "Navmesh Loaded." : "Navmesh load error.");
+    } else {
+      ESP_WARNING(Mn::Debug::Flag::NoSpace)
+          << "Requested navmesh file not found, checked at filename : '"
+          << navmeshFileLoc << "'";
+    }
   }
   // Calling to seeding needs to be done after the pathfinder creation but
   // before anything else.
   seed(config_.randomSeed);
+
+  // This code deletes the instances in the previously loaded scene from
+  // gfx-replay. Because of the issue below, scene graphs are leaked, so we
+  // cannot rely on node deletion to issue gfx-replay deletion entries.
+  auto recorder = gfxReplayMgr_->getRecorder();
+  if (recorder && activeSceneID_ >= 0 &&
+      activeSceneID_ < sceneManager_->getSceneGraphCount()) {
+    recorder->onHideSceneGraph(sceneManager_->getSceneGraph(activeSceneID_));
+  }
 
   // initialize scene graph CAREFUL! previous scene graph is not deleted!
   // TODO:
@@ -261,14 +296,46 @@ bool Simulator::createSceneInstance(const std::string& activeSceneName) {
 
   // 3. Load the Semantic Scene Descriptor file appropriate for the current
   // scene instance.
-  // get name of desired semantic scene descriptor file
-  const std::string semanticSceneDescFilename =
-      metadataMediator_->getSemanticSceneDescriptorPathByHandle(
-          curSceneInstanceAttributes_->getSemanticSceneHandle());
+  // - Get semantic attributes - this handle will either be empty or an existing
+  // handle for a SemanticAttributes in the SemanticAttributesManager. If not
+  // found then an error has occurred.
+  const std::string currSemanticAttrHandle =
+      curSceneInstanceAttributes_->getSemanticSceneHandle();
 
-  // load semantic scene descriptor
-  resourceManager_->loadSemanticSceneDescriptor(semanticSceneDescFilename,
-                                                activeSceneName);
+  const std::shared_ptr<esp::metadata::attributes::SemanticAttributes>
+      semanticAttr =
+          (currSemanticAttrHandle != "")
+              ? metadataMediator_->getSemanticAttributesManager()
+                    ->getFirstMatchingObjectCopyByHandle(currSemanticAttrHandle)
+              : nullptr;
+
+  // This check verifies that either the `semantic_scene_instance' tag specified
+  // in the scene instance config was empty, or else it corresponds to an actual
+  // SemanticAttributes found in the SemanticAttributesManager. If this tag was
+  // not found even as a substring in the SemanticAttributesManager as being
+  // mapped to an existing semantic attributes,it would signify an error in the
+  // scene dataset config specifications.
+  ESP_CHECK(
+      (semanticAttr || (currSemanticAttrHandle == "")),
+      Cr::Utility::formatString(
+          "Simulator::createSceneInstance() : Attempt to reference "
+          "semantic attributes specified in current scene instance : `{}` "
+          "failed due to specified semantic tag `{}` not being found in "
+          "SemanticAttributesManager. Aborting",
+          activeSceneName, currSemanticAttrHandle));
+  if (semanticAttr) {
+    ESP_VERY_VERBOSE(Mn::Debug::Flag::NoSpace)
+        << "Scene Instance `" << activeSceneName
+        << "` has Semantic attr handle : `" << currSemanticAttrHandle
+        << "` which tagged attributes : `" << semanticAttr->getHandle() << "`";
+  } else {
+    ESP_VERY_VERBOSE(Mn::Debug::Flag::NoSpace)
+        << "Scene Instance `" << activeSceneName
+        << "` has Semantic attr handle :  `" << currSemanticAttrHandle
+        << "` which did not reference any attributes";
+  }
+  // - Load semantic scene
+  resourceManager_->loadSemanticScene(semanticAttr, activeSceneName);
 
   // 4. Specify frustumCulling based on value from config
   frustumCulling_ = config_.frustumCulling;
@@ -293,22 +360,33 @@ bool Simulator::createSceneInstance(const std::string& activeSceneName) {
     // SimulatorConfiguration set to override any dataset configuration specs
     // regarding lighting.
     lightSetupKey = config_.sceneLightSetupKey;
-    ESP_DEBUG() << "Using SimulatorConfiguration-specified Light key : -"
-                << lightSetupKey << "-";
+    ESP_DEBUG(Mn::Debug::Flag::NoSpace)
+        << "Using SimulatorConfiguration-specified Light Setup key : `"
+        // empty lightSetupKey denotes using the default
+        << (lightSetupKey == DEFAULT_LIGHTING_KEY ? "DEFAULT_LIGHTING_KEY"
+                                                  : lightSetupKey)
+        << "`.";
   } else {
-    // Get dataset/scene instance specified lighting
+    // Get scene instance specified lighting
     lightSetupKey = metadataMediator_->getLightSetupFullHandle(
         curSceneInstanceAttributes_->getLightingHandle());
-    ESP_DEBUG() << "Using scene instance-specified Light key : -"
-                << lightSetupKey << "-";
-    if (lightSetupKey != NO_LIGHT_KEY) {
-      // lighting attributes corresponding to this key should exist unless it
-      // is empty; if empty, the following does nothing.
+    ESP_DEBUG() << "Using scene instance-specified Light Setup key : `"
+                // empty lightSetupKey denotes using the default
+                << (lightSetupKey == DEFAULT_LIGHTING_KEY
+                        ? "DEFAULT_LIGHTING_KEY"
+                        : lightSetupKey)
+                << "`.";
+    // Do not query Scene Instance Attributes for lightsetup for these keys.
+    // Both should already be handled by ResourceManager
+    if ((lightSetupKey != NO_LIGHT_KEY) &&
+        (lightSetupKey != DEFAULT_LIGHTING_KEY)) {
+      // lighting attributes corresponding to this key should exist in
+      // LightLayoutAttributesManager.
       esp::gfx::LightSetup lightingSetup =
           metadataMediator_->getLightLayoutAttributesManager()
               ->createLightSetupFromAttributes(lightSetupKey);
       // set lightsetup in resource manager
-      resourceManager_->setLightSetup(lightingSetup,
+      resourceManager_->setLightSetup(std::move(lightingSetup),
                                       Mn::ResourceKey{lightSetupKey});
     }
   }
@@ -316,12 +394,26 @@ bool Simulator::createSceneInstance(const std::string& activeSceneName) {
   // key
   config_.sceneLightSetupKey = lightSetupKey;
 
-  // 7. Update MetadataMediator's copy of SimulatorConfiguration to be in sync.
+  // 7. Update MetadataMediator's copy of now-final SimulatorConfiguration to be
+  // in sync, and set default PbrShaderAttributes based on current scene
+  // instance
   metadataMediator_->setSimulatorConfiguration(config_);
 
+  // Set default PbrShaderAttributes based on current scene instance
+  metadataMediator_->setCurrDefaultPbrAttributesHandle(
+      curSceneInstanceAttributes_->getDefaultPbrShaderAttributesHandle());
+  // Set the mappings from region tags to handles
+  metadataMediator_->setCurrScenePbrShaderRegionMap(
+      curSceneInstanceAttributes_->getRegionPbrShaderAttributesHandles());
+
+  // Update ResourceManager's loaded Pbr/Ibl assets based on most up to date
+  // state of metadataMediator_'s currently active scene dataset.
+  resourceManager_->loadAllIBLAssets();
+
   // 8. Load stage specified by Scene Instance Attributes
-  bool success = instanceStageForSceneAttributes(curSceneInstanceAttributes_);
-  // 9. Load object instances as spceified by Scene Instance Attributes.
+  bool success = instanceStageForSceneAttributes(curSceneInstanceAttributes_,
+                                                 semanticAttr);
+  // 9. Load object instances as specified by Scene Instance Attributes.
   if (success) {
     success = instanceObjectsForSceneAttributes(curSceneInstanceAttributes_);
     if (success) {
@@ -330,9 +422,9 @@ bool Simulator::createSceneInstance(const std::string& activeSceneName) {
       success = instanceArticulatedObjectsForSceneAttributes(
           curSceneInstanceAttributes_);
       if (success) {
-        // TODO : reset may eventually have all the scene instantiation code so
-        // that scenes can be reset
-        reset();
+        // Pass true so that the object/AO placement code is bypassed in
+        // physicsManager_->reset
+        reset(true);
       }
     }
   }
@@ -342,7 +434,9 @@ bool Simulator::createSceneInstance(const std::string& activeSceneName) {
 
 bool Simulator::instanceStageForSceneAttributes(
     const metadata::attributes::SceneInstanceAttributes::cptr&
-        curSceneInstanceAttributes_) {
+        curSceneInstanceAttributes_,
+    const std::shared_ptr<esp::metadata::attributes::SemanticAttributes>&
+        semanticAttr) {
   // Load stage specified by Scene Instance Attributes
   // Get Stage Instance Attributes - contains name of stage and initial
   // transformation of stage in scene.
@@ -396,9 +490,40 @@ bool Simulator::instanceStageForSceneAttributes(
   // from the dataset config
   stageAttributes->setUseSemanticTextures(config_.useSemanticTexturesIfFound);
   // set stage's ref to ssd file
-  stageAttributes->setSemanticDescriptorFilename(
-      metadataMediator_->getSemanticSceneDescriptorPathByHandle(
-          curSceneInstanceAttributes_->getSemanticSceneHandle()));
+  // - Get pertinent semantic values if any referenced in existing
+  // SemanticAttributes
+  if (semanticAttr != nullptr) {
+    const std::string semanticAttrSSDName =
+        semanticAttr->getSemanticDescriptorFilename();
+    const std::string semanticAttrAssetName =
+        semanticAttr->getSemanticAssetHandle();
+    // - Set stage semantic values if appropriate - this overrides whatever is
+    // specified previoussly in stage attributes.
+    if (semanticAttrSSDName != "") {
+      stageAttributes->setSemanticDescriptorFilename(semanticAttrSSDName);
+      stageAttributes->setSemanticDescriptorFullPath(
+          semanticAttr->getSemanticDescriptorFullPath());
+    }
+    if (semanticAttrAssetName != "") {
+      stageAttributes->setSemanticAssetHandle(semanticAttrAssetName);
+      stageAttributes->setSemanticAssetFullPath(
+          semanticAttr->getSemanticAssetFullPath());
+      stageAttributes->setSemanticAssetTypeEnum(
+          semanticAttr->getSemanticAssetType());
+      if (semanticAttr->getSemanticOrientFront() !=
+          stageAttributes->getSemanticOrientFront()) {
+        stageAttributes->setSemanticOrientFront(
+            semanticAttr->getSemanticOrientFront());
+      }
+      if (semanticAttr->getSemanticOrientUp() !=
+          stageAttributes->getSemanticOrientUp()) {
+        stageAttributes->setSemanticOrientUp(
+            semanticAttr->getSemanticOrientUp());
+      }
+    }
+    metadataMediator_->getStageAttributesManager()
+        ->finalizeAttrPathsBeforeRegister(stageAttributes);
+  }
 
   // set visibility if explicitly specified in stage instance configs
   int visSet = stageInstanceAttributes->getIsInstanceVisible();
@@ -411,9 +536,9 @@ bool Simulator::instanceStageForSceneAttributes(
   std::vector<int> tempIDs{activeSceneID_, activeSemanticSceneID_};
   ESP_DEBUG() << "Start to load stage named :" << stageAttributes->getHandle()
               << "with render asset :"
-              << stageAttributes->getRenderAssetHandle()
+              << stageAttributes->getRenderAssetFullPath()
               << "and collision asset :"
-              << stageAttributes->getCollisionAssetHandle();
+              << stageAttributes->getCollisionAssetFullPath();
 
   // Load stage
   bool loadSuccess = resourceManager_->loadStage(
@@ -459,18 +584,17 @@ bool Simulator::instanceStageForSceneAttributes(
         (activeSemanticSceneID_ != activeSceneID_)) {
       sceneID_.push_back(activeSemanticSceneID_);
     } else {  // activeSemanticSceneID_ == activeSceneID_;
-      assets::AssetType stageType =
-          static_cast<assets::AssetType>(stageAttributes->getRenderAssetType());
+      AssetType stageType = stageAttributes->getRenderAssetType();
       // instance meshes contain their semantic annotations
       // empty scene has none to worry about
-      if (!(stageType == assets::AssetType::INSTANCE_MESH ||
-            stageAttributesHandle == assets::EMPTY_SCENE)) {
+      if (!(stageType == AssetType::InstanceMesh ||
+            stageAttributesHandle == esp::EMPTY_SCENE)) {
         semanticSceneMeshLoaded_ = false;
         // TODO: programmatic generation of semantic meshes when no
         // annotations are provided.
-        ESP_WARNING() << "\n---\nThe active scene does not contain semantic "
+        ESP_WARNING() << "The active scene does not contain semantic "
                          "annotations : activeSemanticSceneID_ ="
-                      << activeSemanticSceneID_ << " \n---";
+                      << activeSemanticSceneID_;
       }
     }
   }  // if ID has changed - needs to be reset
@@ -480,19 +604,13 @@ bool Simulator::instanceStageForSceneAttributes(
 bool Simulator::instanceObjectsForSceneAttributes(
     const metadata::attributes::SceneInstanceAttributes::cptr&
         curSceneInstanceAttributes_) {
-  // Load object instances as spceified by Scene Instance Attributes.
-  // Get all instances of objects described in scene
+  // Load object instances as specified by Scene Instance Attributes.
+  // Get copies of all instances of objects described in scene
   const std::vector<SceneObjectInstanceAttributes::cptr> objectInstances =
       curSceneInstanceAttributes_->getObjectInstances();
 
   // node to attach object to
   scene::SceneNode* attachmentNode = nullptr;
-
-  // whether or not to correct for COM shift - only do for blender-sourced
-  // scene attributes
-  bool defaultCOMCorrection =
-      (curSceneInstanceAttributes_->getTranslationOrigin() ==
-       metadata::attributes::SceneInstanceTranslationOrigin::AssetLocal);
 
   // Iterate through instances, create object and implement initial
   // transformation.
@@ -506,20 +624,9 @@ bool Simulator::instanceObjectsForSceneAttributes(
             "due to object instance configuration not being found. Aborting",
             config_.activeSceneName));
 
-    const std::string objAttrFullHandle =
-        metadataMediator_->getObjAttrFullHandle(objInst->getHandle());
-    // make sure full handle is not empty
-    ESP_CHECK(
-        !objAttrFullHandle.empty(),
-        Cr::Utility::formatString(
-            "Simulator::instanceObjectsForSceneAttributes() : Attempt to load "
-            "object instance specified in current scene instance :{} failed "
-            "due to object instance configuration handle '{}' being empty or "
-            "unknown. Aborting",
-            config_.activeSceneName, objInst->getHandle()));
     // objID =
-    physicsManager_->addObjectInstance(objInst, objAttrFullHandle,
-                                       defaultCOMCorrection, attachmentNode,
+    physicsManager_->addObjectInstance(objInst, &getDrawableGroup(),
+                                       attachmentNode,
                                        config_.sceneLightSetupKey);
   }  // for each object attributes
   return true;
@@ -528,13 +635,11 @@ bool Simulator::instanceObjectsForSceneAttributes(
 bool Simulator::instanceArticulatedObjectsForSceneAttributes(
     const metadata::attributes::SceneInstanceAttributes::cptr&
         curSceneInstanceAttributes_) {
-  // 6. Load all articulated object instances
-  // Get all instances of articulated objects described in scene
+  // Load all articulated object instances
+  // Get copies of all instances of articulated objects described in scene
   const std::vector<SceneAOInstanceAttributes::cptr> artObjInstances =
       curSceneInstanceAttributes_->getArticulatedObjectInstances();
 
-  // int aoID = 0;
-  auto& drawables = getDrawableGroup();
   // Iterate through instances, create object and implement initial
   // transformation.
   for (const auto& artObjInst : artObjInstances) {
@@ -547,43 +652,25 @@ bool Simulator::instanceArticulatedObjectsForSceneAttributes(
                   "AO instance configuration not being found. Aborting",
                   config_.activeSceneName));
 
-    // get model file name
-    const std::string artObjFilePath =
-        metadataMediator_->getArticulatedObjModelFullHandle(
-            artObjInst->getHandle());
-
-    // make sure full handle is not empty
-    ESP_CHECK(
-        !artObjFilePath.empty(),
-        Cr::Utility::formatString(
-            "Simulator::instanceArticulatedObjectsForSceneAttributes() : "
-            "Attempt "
-            "to load articualted object instance specified in current scene "
-            "instance :{} failed due to AO instance configuration file handle "
-            "'{}' being empty or unknown. Aborting",
-            config_.activeSceneName, artObjInst->getHandle()));
-
     // create articulated object
     // aoID =
-    physicsManager_->addArticulatedObjectInstance(artObjFilePath, artObjInst,
-                                                  config_.sceneLightSetupKey);
+    physicsManager_->addArticulatedObjectInstance(
+        artObjInst, &getDrawableGroup(), config_.sceneLightSetupKey);
   }  // for each articulated object instance
   return true;
 }  // Simulator::instanceArticulatedObjectsForSceneAttributes
 
-void Simulator::reset() {
+void Simulator::reset(bool calledAfterSceneCreate) {
   if (physicsManager_ != nullptr) {
-    // Note: only resets time to 0 by default.
-    physicsManager_->reset();
+    // Note: resets time to 0 and all existing objects set back to initial
+    // states. Does not add back deleted objects or delete added objects. Does
+    // not break ManagedObject pointers.
+    physicsManager_->reset(calledAfterSceneCreate);
   }
 
-  for (auto& agent : agents_) {
-    agent->reset();
-  }
-  const Magnum::Range3D& sceneBB =
-      getActiveSceneGraph().getRootNode().computeCumulativeBB();
+  getActiveSceneGraph().getRootNode().computeCumulativeBB();
   resourceManager_->setLightSetup(gfx::getDefaultLights());
-}  // Simulator::reset()
+}  // Simulator::reset
 
 metadata::attributes::SceneInstanceAttributes::ptr
 Simulator::buildCurrentStateSceneAttributes() const {
@@ -598,13 +685,15 @@ Simulator::buildCurrentStateSceneAttributes() const {
   // for a copy of curSceneInstanceAttributes_.
   ESP_CHECK(initSceneInstanceAttr,
             "Simulator::saveCurrentSceneInstance : SceneInstanceAttributes "
-            "used to initializee current scene never registered or has been "
+            "used to initialize current scene never registered or has been "
             "removed from SceneInstanceAttributesManager. Aborting.");
 
-  // 2. Pass the copy to Physics Manager so that it can be updated with current
-  // scene setup - stage instance, object instances and articulated object
-  // instances
+  // 2. Pass the copy to Physics Manager so that it can be updated with
+  // current scene setup - stage instance, object instances and articulated
+  // object instances
   physicsManager_->buildCurrentStateSceneAttributes(initSceneInstanceAttr);
+  // NOTE This copy now is different from the registered original in the
+  // SceneInstanceAttributesManager.
 
   // 3. Return the copy
   return initSceneInstanceAttr;
@@ -614,6 +703,66 @@ void Simulator::seed(uint32_t newSeed) {
   random_->seed(newSeed);
   pathfinder_->seed(newSeed);
 }
+const std::shared_ptr<metadata::managers::AOAttributesManager>&
+Simulator::getAOAttributesManager() const {
+  return metadataMediator_->getAOAttributesManager();
+}
+const metadata::managers::AssetAttributesManager::ptr&
+Simulator::getAssetAttributesManager() const {
+  return metadataMediator_->getAssetAttributesManager();
+}
+
+const metadata::managers::LightLayoutAttributesManager::ptr&
+Simulator::getLightLayoutAttributesManager() const {
+  return metadataMediator_->getLightLayoutAttributesManager();
+}
+
+const metadata::managers::ObjectAttributesManager::ptr&
+Simulator::getObjectAttributesManager() const {
+  return metadataMediator_->getObjectAttributesManager();
+}
+
+const metadata::managers::PhysicsAttributesManager::ptr&
+Simulator::getPhysicsAttributesManager() const {
+  return metadataMediator_->getPhysicsAttributesManager();
+}
+
+const metadata::managers::StageAttributesManager::ptr&
+Simulator::getStageAttributesManager() const {
+  return metadataMediator_->getStageAttributesManager();
+}
+
+std::string Simulator::getActiveSceneDatasetName() {
+  return metadataMediator_->getActiveSceneDatasetName();
+}
+
+void Simulator::setActiveSceneDatasetName(const std::string& _dsHandle) {
+  metadataMediator_->setActiveSceneDatasetName(_dsHandle);
+}
+
+bool Simulator::saveCurrentSceneInstance(
+    const std::string& saveFilename) const {
+  if (sceneHasPhysics()) {
+    ESP_DEBUG() << "Attempting to save current scene layout as "
+                   "SceneInstanceAttributes with filename :"
+                << saveFilename;
+    return metadataMediator_->getSceneInstanceAttributesManager()
+        ->saveManagedObjectToFile(buildCurrentStateSceneAttributes(),
+                                  saveFilename, false);
+  }
+  return false;
+}  // saveCurrentSceneInstance
+
+bool Simulator::saveCurrentSceneInstance(bool overwrite) const {
+  if (sceneHasPhysics()) {
+    ESP_DEBUG() << "Attempting to save current scene layout as "
+                   "SceneInstanceAttributes.";
+    return metadataMediator_->getSceneInstanceAttributesManager()
+        ->saveManagedObjectToFile(buildCurrentStateSceneAttributes(),
+                                  overwrite);
+  }
+  return false;
+}  // saveCurrentSceneInstance
 
 void Simulator::reconfigureReplayManager(bool enableGfxReplaySave) {
   gfxReplayMgr_ = std::make_shared<gfx::replay::ReplayManager>();
@@ -626,160 +775,28 @@ void Simulator::reconfigureReplayManager(bool enableGfxReplaySave) {
   CORRADE_INTERNAL_ASSERT(resourceManager_);
   resourceManager_->setRecorder(gfxReplayMgr_->getRecorder());
 
-  // provide Player callback to replay manager
-  gfxReplayMgr_->setPlayerCallback(
-      [this](const assets::AssetInfo& assetInfo,
-             const assets::RenderAssetInstanceCreationInfo& creation)
-          -> scene::SceneNode* {
-        return loadAndCreateRenderAssetInstance(assetInfo, creation);
-      });
-}
+  // provide Player backend implementation to replay manager
+  class SceneGraphPlayerImplementation
+      : public gfx::replay::AbstractSceneGraphPlayerImplementation {
+   public:
+    explicit SceneGraphPlayerImplementation(Simulator& self) : self_{self} {}
 
-void Simulator::updateShadowMapDrawableGroup() {
-  scene::SceneGraph& sg = getActiveSceneGraph();
-  // currently the method is naive: destroy the existing group, and recreate one
-  sg.deleteDrawableGroup(shadowMapDrawableGroupName);
-  sg.createDrawableGroup(shadowMapDrawableGroupName);
-  const gfx::DrawableGroup& sourceGroup = sg.getDrawables();
-  gfx::DrawableGroup* shadowMapGroup =
-      sg.getDrawableGroup(shadowMapDrawableGroupName);
-  CORRADE_INTERNAL_ASSERT(shadowMapGroup);
-
-  for (size_t iDrawable = 0; iDrawable < sourceGroup.size(); ++iDrawable) {
-    const gfx::Drawable& currentDrawable =
-        static_cast<const gfx::Drawable&>(sourceGroup[iDrawable]);
-    gfx::DrawableType type = currentDrawable.getDrawableType();
-    // So far no support for the PTex (lighting-baked mesh)
-    // SKIP!!!
-    if ((type != gfx::DrawableType::Generic) &&
-        (type != gfx::DrawableType::Pbr)) {
-      continue;
+   private:
+    gfx::replay::NodeHandle loadAndCreateRenderAssetInstance(
+        const assets::AssetInfo& assetInfo,
+        const assets::RenderAssetInstanceCreationInfo& creation) override {
+      return reinterpret_cast<gfx::replay::NodeHandle>(
+          self_.loadAndCreateRenderAssetInstance(assetInfo, creation));
     }
 
-    esp::scene::SceneNode& node = currentDrawable.getSceneNode();
-    node.addFeature<gfx::VarianceShadowMapDrawable>(
-        &currentDrawable.getMesh(), resourceManager_->getShaderManager(),
-        shadowMapGroup);
-  }
-}
-
-void Simulator::computeShadowMaps(float lightNearPlane, float lightFarPlane) {
-  scene::SceneGraph& sg = getActiveSceneGraph();
-  auto& shadowManager = resourceManager_->getShadowMapManger();
-  auto& shadowMapKeys = resourceManager_->getShadowMapKeys();
-  std::vector<Mn::ResourceKey>& keys = shadowMapKeys[activeSceneID_];
-
-  // TODO:
-  // current implementation is for static lights for static scenes
-  // We will have to refactor the code so that in the future dynamic lights and
-  // dynamic scenes can be handled.
-
-  // construct the lights from scene dataset config
-  esp::gfx::LightSetup lightingSetup =
-      metadataMediator_->getLightLayoutAttributesManager()
-          ->createLightSetupFromAttributes(config_.sceneLightSetupKey);
-
-  scene::SceneNode& lightNode = sg.getRootNode().createChild();
-  gfx::CubeMapCamera camera{lightNode};
-
-  int actualShadowMaps = maxNumShadowMaps <= lightingSetup.size()
-                             ? maxNumShadowMaps
-                             : lightingSetup.size();
-  for (int iLight = 0; iLight < actualShadowMaps; ++iLight) {
-    // sanity checks
-    CORRADE_ASSERT(
-        lightingSetup[iLight].model == esp::gfx::LightPositionModel::Global,
-        "Simulator::computeShadowMaps: To compute the shadow map, the light"
-            << iLight << "should be in `global` mode.", );
-    CORRADE_ASSERT(lightingSetup[iLight].vector.w() == 1,
-                   "Simulator::computeShadowMaps: Only point light shadow is "
-                   "supported. However, the light"
-                       << iLight << "is a directional light.", );
-    Mn::Vector3 lightPos = Mn::Vector3{lightingSetup[iLight].vector.xyz()};
-
-    Mn::ResourceKey key(Corrade::Utility::formatString(
-        assets::ResourceManager::SHADOW_MAP_KEY_TEMPLATE, activeSceneID_,
-        iLight));
-
-    // insert the key to the data base
-    keys.push_back(key);
-
-    // create the resource if there is not one
-    Mn::Resource<gfx::CubeMap> pointShadowMap =
-        shadowManager.get<gfx::CubeMap>(key);
-    if (!pointShadowMap) {
-      shadowManager.set<gfx::CubeMap>(
-          pointShadowMap.key(),
-          new gfx::CubeMap{
-              shadowMapSize,
-              {gfx::CubeMap::Flag::VarianceShadowMapTexture |
-               // gfx::CubeMap::Flag::ColorTexture | // for future visualization
-               gfx::CubeMap::Flag::AutoBuildMipmap}},
-          Mn::ResourceDataState::Final, Mn::ResourcePolicy::Resident);
-
-      CORRADE_INTERNAL_ASSERT(pointShadowMap && pointShadowMap.key() == key);
-    }
-    if (pointShadowMap->getCubeMapSize() != shadowMapSize) {
-      pointShadowMap->reset(shadowMapSize);
+    void changeLightSetup(const gfx::LightSetup& lights) override {
+      self_.setLightSetup(lights);
     }
 
-    // setup a CubeMapCamera in the root of scene graph, and set its position to
-    // light global position
-    lightNode.setTranslation(lightPos);
-
-    camera.setProjectionMatrix(shadowMapSize,   // width of the square
-                               lightNearPlane,  // near plane
-                               lightFarPlane);  // far plane
-    pointShadowMap->renderToTexture(camera, sg, shadowMapDrawableGroupName,
-                                    {gfx::RenderCamera::Flag::FrustumCulling |
-                                     gfx::RenderCamera::Flag::ClearDepth});
-
-    Mn::ResourceKey helperKey("helper-shadow-cubemap");
-    Mn::Resource<gfx::CubeMap> helperShadowMap =
-        shadowManager.get<gfx::CubeMap>(helperKey);
-    if (!helperShadowMap) {
-      shadowManager.set<gfx::CubeMap>(
-          helperShadowMap.key(),
-          new gfx::CubeMap{shadowMapSize,
-                           {gfx::CubeMap::Flag::VarianceShadowMapTexture |
-                            gfx::CubeMap::Flag::AutoBuildMipmap}},
-          Mn::ResourceDataState::Final, Mn::ResourcePolicy::ReferenceCounted);
-
-      CORRADE_INTERNAL_ASSERT(helperShadowMap &&
-                              helperShadowMap.key() == helperKey);
-    }
-
-    // for VSM only !!!
-    renderer_->applyGaussianFiltering(
-        *pointShadowMap, *helperShadowMap,
-        gfx::CubeMap::TextureType::VarianceShadowMap);
-  }
-}
-
-void Simulator::setShadowMapsToDrawables() {
-  scene::SceneGraph& sg = getActiveSceneGraph();
-  gfx::DrawableGroup& defaultRenderingGroup = sg.getDrawables();
-  auto& shadowManager = resourceManager_->getShadowMapManger();
-  auto& shadowMapKeys = resourceManager_->getShadowMapKeys();
-
-  for (size_t iDrawable = 0; iDrawable < defaultRenderingGroup.size();
-       ++iDrawable) {
-    const gfx::Drawable& currentDrawable =
-        static_cast<const gfx::Drawable&>(defaultRenderingGroup[iDrawable]);
-    gfx::DrawableType type = currentDrawable.getDrawableType();
-    // So far only pbr drawables support shadow
-    // SKIP!!!
-    if (type != gfx::DrawableType::Pbr) {
-      continue;
-    }
-    auto& pbrDrawable = const_cast<gfx::PbrDrawable&>(
-        static_cast<const gfx::PbrDrawable&>(currentDrawable));
-    CORRADE_ASSERT(shadowMapKeys[activeSceneID_].size(),
-                   "Simulator::setShadowMapsToDrawables(): there are no shadow "
-                   "maps for the current active scene graph.", );
-    pbrDrawable.setShadowData(shadowManager, shadowMapKeys[activeSceneID_],
-                              esp::gfx::PbrShader::Flag::ShadowsVSM);
-  }
+    Simulator& self_;
+  };
+  gfxReplayMgr_->setPlayerImplementation(
+      std::make_shared<SceneGraphPlayerImplementation>(*this));
 }
 
 // === Physics Simulator Functions ===
@@ -813,15 +830,9 @@ double Simulator::getPhysicsTimeStep() {
 }
 
 bool Simulator::recomputeNavMesh(nav::PathFinder& pathfinder,
-                                 const nav::NavMeshSettings& navMeshSettings,
-                                 const bool includeStaticObjects) {
-  ESP_CHECK(config_.createRenderer,
-            "::recomputeNavMesh: "
-            "SimulatorConfiguration::createRenderer is false. Scene "
-            "geometry is required to recompute navmesh. No geometry is "
-            "loaded without renderer initialization.");
-
-  assets::MeshData::ptr joinedMesh = getJoinedMesh(includeStaticObjects);
+                                 const nav::NavMeshSettings& navMeshSettings) {
+  assets::MeshData::ptr joinedMesh =
+      getJoinedMesh(navMeshSettings.includeStaticObjects);
 
   if (!pathfinder.build(navMeshSettings, *joinedMesh)) {
     ESP_ERROR() << "Failed to build navmesh";
@@ -842,7 +853,7 @@ assets::MeshData::ptr Simulator::getJoinedMesh(
   auto stageInitAttrs = physicsManager_->getStageInitAttributes();
   if (stageInitAttrs != nullptr) {
     joinedMesh = resourceManager_->createJoinedCollisionMesh(
-        stageInitAttrs->getRenderAssetHandle());
+        stageInitAttrs->getRenderAssetFullPath());
   }
 
   // add STATIC collision objects
@@ -874,9 +885,9 @@ assets::MeshData::ptr Simulator::getJoinedMesh(
         objectTransform.scale(Magnum::EigenIntegration::cast<vec3f>(
             initializationTemplate->getScale()));
         std::string meshHandle =
-            initializationTemplate->getCollisionAssetHandle();
+            initializationTemplate->getCollisionAssetFullPath();
         if (meshHandle.empty()) {
-          meshHandle = initializationTemplate->getRenderAssetHandle();
+          meshHandle = initializationTemplate->getRenderAssetFullPath();
         }
         meshComponentStates[meshHandle].push_back(objectTransform);
       }
@@ -940,7 +951,7 @@ assets::MeshData::ptr Simulator::getJoinedSemanticMesh(
   auto stageInitAttrs = physicsManager_->getStageInitAttributes();
   if (stageInitAttrs != nullptr) {
     joinedSemanticMesh = resourceManager_->createJoinedSemanticCollisionMesh(
-        objectIds, stageInitAttrs->getSemanticAssetHandle());
+        objectIds, stageInitAttrs->getSemanticAssetFullPath());
   }
 
   return joinedSemanticMesh;
@@ -979,17 +990,11 @@ bool Simulator::isNavMeshVisualizationActive() {
   return (navMeshVisNode_ != nullptr && navMeshVisPrimID_ != ID_UNDEFINED);
 }
 
-// Agents
-void Simulator::sampleRandomAgentState(agent::AgentState& agentState) {
-  if (pathfinder_->isLoaded()) {
-    agentState.position = pathfinder_->getRandomNavigablePoint();
-    const float randomAngleRad = random_->uniform_float_01() * M_PI;
-    quatf rotation(Eigen::AngleAxisf(randomAngleRad, vec3f::UnitY()));
-    agentState.rotation = rotation.coeffs();
-    // TODO: any other AgentState members should be randomized?
-  } else {
-    ESP_ERROR() << "No loaded PathFinder, aborting sampleRandomAgentState.";
-  }
+void Simulator::setMetadataMediator(
+    metadata::MetadataMediator::ptr _metadataMediator) {
+  metadataMediator_ = std::move(_metadataMediator);
+  // set newly added MM to have current Simulator Config
+  metadataMediator_->setSimulatorConfiguration(this->config_);
 }
 
 scene::SceneNode* Simulator::loadAndCreateRenderAssetInstance(
@@ -1004,243 +1009,180 @@ scene::SceneNode* Simulator::loadAndCreateRenderAssetInstance(
       assetInfo, creation, sceneManager_.get(), tempIDs);
 }
 
-#ifdef ESP_BUILD_WITH_VHACD
-std::string Simulator::convexHullDecomposition(
-    const std::string& filename,
-    const assets::ResourceManager::VHACDParameters& params,
-    const bool renderChd,
-    const bool saveChdToObj) {
-  ESP_DEBUG() << "VHACD PARAMS RESOLUTION:" << params.m_resolution;
-
-  // generate a unique filename
-  std::string chdFilename =
-      Cr::Utility::Path::splitExtension(filename).first() + ".chd";
-  if (resourceManager_->isAssetDataRegistered(chdFilename)) {
-    int nameAttempt = 1;
-    chdFilename += "_";
-    // Iterate until a unique filename is found.
-    while (resourceManager_->isAssetDataRegistered(
-        chdFilename + std::to_string(nameAttempt))) {
-      ++nameAttempt;
-    }
-    chdFilename += std::to_string(nameAttempt);
-  }
-
-  // run VHACD on the given filename mesh with the given params, store the
-  // results in the resourceDict_ registered under chdFilename
-  resourceManager_->createConvexHullDecomposition(filename, chdFilename, params,
-                                                  saveChdToObj);
-
-  // create object attributes for the new chd object
-  auto objAttrMgr = metadataMediator_->getObjectAttributesManager();
-  auto chdObjAttr = objAttrMgr->createObject(chdFilename, false);
-
-  // specify collision asset handle & other attributes
-  chdObjAttr->setCollisionAssetHandle(chdFilename);
-  chdObjAttr->setIsCollidable(true);
-  chdObjAttr->setCollisionAssetIsPrimitive(false);
-  chdObjAttr->setJoinCollisionMeshes(false);
-
-  // if the renderChd flag is set to true, set the convex hull decomposition
-  // to be the render asset (useful for testing)
-
-  chdObjAttr->setRenderAssetHandle(renderChd ? chdFilename : filename);
-
-  chdObjAttr->setRenderAssetIsPrimitive(false);
-
-  // register object and return handle
-  objAttrMgr->registerObject(chdObjAttr, chdFilename, true);
-  return chdObjAttr->getHandle();
-}
-#endif
-
-agent::Agent::ptr Simulator::addAgent(
-    const agent::AgentConfiguration& agentConfig,
-    scene::SceneNode& agentParentNode) {
-  // initialize the agent, as well as all the sensors on it.
-
-  // attach each agent, each sensor to a scene node, set the local
-  // transformation of the sensor w.r.t. the agent (done internally in the
-  // constructor of Agent)
-  auto& agentNode = agentParentNode.createChild();
-  agent::Agent::ptr ag = agent::Agent::create(agentNode, agentConfig);
-  esp::sensor::SensorFactory::createSensors(agentNode,
-                                            agentConfig.sensorSpecifications);
-  agent::AgentState state;
-  sampleRandomAgentState(state);
-  ag->setInitialState(state);
-
-  // Add a RenderTarget to each of the agent's visual sensors
-  for (auto& it : ag->getSubtreeSensors()) {
-    if (it.second.get().isVisualSensor()) {
-      sensor::VisualSensor& sensor =
-          static_cast<sensor::VisualSensor&>(it.second.get());
-      renderer_->bindRenderTarget(sensor);
-    }
-  }
-
-  agents_.push_back(ag);
-  // TODO: just do this once
-  if (pathfinder_->isLoaded()) {
-    scene::ObjectControls::MoveFilterFunc moveFilterFunction;
-    if (config_.allowSliding) {
-      moveFilterFunction = [&](const vec3f& start, const vec3f& end) {
-        return pathfinder_->tryStep(start, end);
-      };
-    } else {
-      moveFilterFunction = [&](const vec3f& start, const vec3f& end) {
-        return pathfinder_->tryStepNoSliding(start, end);
-      };
-    }
-    ag->getControls()->setMoveFilterFunction(moveFilterFunction);
-  }
-
-  return ag;
-}
-
-agent::Agent::ptr Simulator::addAgent(
-    const agent::AgentConfiguration& agentConfig) {
-  return addAgent(agentConfig, getActiveSceneGraph().getRootNode());
-}
-
-agent::Agent::ptr Simulator::getAgent(const int agentId) {
-  CORRADE_INTERNAL_ASSERT(0 <= agentId && agentId < agents_.size());
-  return agents_[agentId];
-}
-
 esp::sensor::Sensor& Simulator::addSensorToObject(
     const int objectId,
     const esp::sensor::SensorSpec::ptr& sensorSpec) {
   getRenderGLContext();
 
   esp::sensor::SensorSetup sensorSpecifications = {sensorSpec};
-  esp::scene::SceneNode& objectNode =
-      *(getRigidObjectManager()->getObjectCopyByID(objectId)->getSceneNode());
-  esp::sensor::SensorFactory::createSensors(objectNode, sensorSpecifications);
-  return objectNode.getNodeSensorSuite().get(sensorSpec->uuid);
+
+  // Handle attachements to the SceneGraph
+  esp::scene::SceneNode* objectNode = nullptr;
+  if (objectId == RIGID_STAGE_ID) {
+    // This is the stage, attach to the root node
+    objectNode = &getActiveSceneGraph().getRootNode();
+  } else if (getRigidObjectManager()->getObjectLibHasID(objectId)) {
+    // This is a ManagedRigidObject
+    objectNode =
+        getRigidObjectManager()->getObjectCopyByID(objectId)->getSceneNode();
+  } else if (getArticulatedObjectManager()->getObjectLibHasID(objectId)) {
+    // This is a ManagedArticulatedObject
+    objectNode = getArticulatedObjectManager()
+                     ->getObjectCopyByID(objectId)
+                     ->getSceneNode();
+  } else {
+    // This could be a link, search for it
+    for (auto& ao :
+         getArticulatedObjectManager()->getObjectsByHandleSubstring()) {
+      auto linkObjectIds = ao.second->getLinkObjectIds();
+      auto objectIdIx = linkObjectIds.find(objectId);
+      if (objectIdIx != linkObjectIds.end()) {
+        objectNode = ao.second->getLinkSceneNode(objectIdIx->second);
+      }
+    }
+    ESP_CHECK(objectNode != nullptr,
+              "Invalid object id provided for sensor attachemnt."
+                  << objectId << " No object found.");
+  }
+
+  esp::sensor::SensorFactory::createSensors(*objectNode, sensorSpecifications);
+  auto& newSensor = objectNode->getNodeSensorSuite().get(sensorSpec->uuid);
+  if (newSensor.isVisualSensor() && config_.createRenderer) {
+    renderer_->bindRenderTarget(
+        static_cast<esp::sensor::VisualSensor&>(newSensor));
+  }
+
+  return newSensor;
 }
 
 void Simulator::setPathFinder(nav::PathFinder::ptr pathfinder) {
   pathfinder_ = std::move(pathfinder);
 }
-gfx::RenderTarget* Simulator::getRenderTarget(int agentId,
-                                              const std::string& sensorId) {
-  agent::Agent::ptr ag = getAgent(agentId);
-
-  if (ag != nullptr) {
-    sensor::Sensor& sensor = ag->getSubtreeSensorSuite().get(sensorId);
-    if (sensor.isVisualSensor()) {
-      return &(static_cast<sensor::VisualSensor&>(sensor).renderTarget());
+gfx::RenderTarget* Simulator::getRenderTarget(const std::string& sensorUuid) {
+  // TODO: This should be a global map lookup instead of a tree search
+  auto allSensors = getActiveSceneGraph().getRootNode().getSubtreeSensors();
+  auto sensor = allSensors.find(sensorUuid);
+  if (sensor != allSensors.end()) {
+    if (sensor->second.get().isVisualSensor()) {
+      return &(static_cast<sensor::VisualSensor&>(sensor->second.get())
+                   .renderTarget());
     }
   }
+
   return nullptr;
 }
 
-bool Simulator::displayObservation(const int agentId,
-                                   const std::string& sensorId) {
-  agent::Agent::ptr ag = getAgent(agentId);
+bool Simulator::displayObservation(const std::string& sensorUuid) {
+  // TODO: This should be a global map lookup instead of a tree search
+  auto allSensors = getActiveSceneGraph().getRootNode().getSubtreeSensors();
+  auto sensor = allSensors.find(sensorUuid);
 
-  if (ag != nullptr) {
-    sensor::Sensor& sensor = ag->getSubtreeSensorSuite().get(sensorId);
-    return sensor.displayObservation(*this);
+  if (sensor != allSensors.end()) {
+    return sensor->second.get().displayObservation(*this);
   }
   return false;
 }
 
-bool Simulator::drawObservation(const int agentId,
-                                const std::string& sensorId) {
-  agent::Agent::ptr ag = getAgent(agentId);
+bool Simulator::drawObservation(const std::string& sensorUuid) {
+  // TODO: This should be a global map lookup instead of a tree search
+  auto allSensors = getActiveSceneGraph().getRootNode().getSubtreeSensors();
+  auto sensor = allSensors.find(sensorUuid);
 
-  if (ag != nullptr) {
-    sensor::Sensor& sensor = ag->getSubtreeSensorSuite().get(sensorId);
-    if (sensor.isVisualSensor()) {
-      return static_cast<sensor::VisualSensor&>(sensor).drawObservation(*this);
+  if (sensor != allSensors.end()) {
+    if (sensor->second.get().isVisualSensor()) {
+      return static_cast<sensor::VisualSensor&>(sensor->second.get())
+          .drawObservation(*this);
     }
   }
   return false;
 }
 
-bool Simulator::visualizeObservation(int agentId, const std::string& sensorId) {
-  agent::Agent::ptr ag = getAgent(agentId);
+bool Simulator::visualizeObservation(const std::string& sensorUuid) {
+  // TODO: This should be a global map lookup instead of a tree search
+  auto allSensors = getActiveSceneGraph().getRootNode().getSubtreeSensors();
+  auto sensor = allSensors.find(sensorUuid);
 
-  if (ag != nullptr) {
-    sensor::Sensor& sensor = ag->getSubtreeSensorSuite().get(sensorId);
-    if (sensor.isVisualSensor()) {
-      renderer_->visualize(static_cast<sensor::VisualSensor&>(sensor));
+  if (sensor != allSensors.end()) {
+    if (sensor->second.get().isVisualSensor()) {
+      renderer_->visualize(
+          static_cast<sensor::VisualSensor&>(sensor->second.get()));
     }
     return true;
   }
   return false;
 }
 
-bool Simulator::visualizeObservation(int agentId,
-                                     const std::string& sensorId,
+bool Simulator::visualizeObservation(const std::string& sensorUuid,
                                      float colorMapOffset,
                                      float colorMapScale) {
-  agent::Agent::ptr ag = getAgent(agentId);
+  // TODO: This should be a global map lookup instead of a tree search
+  auto allSensors = getActiveSceneGraph().getRootNode().getSubtreeSensors();
+  auto sensor = allSensors.find(sensorUuid);
 
-  if (ag != nullptr) {
-    sensor::Sensor& sensor = ag->getSubtreeSensorSuite().get(sensorId);
-    if (sensor.isVisualSensor()) {
-      renderer_->visualize(static_cast<sensor::VisualSensor&>(sensor),
-                           colorMapOffset, colorMapScale);
+  if (sensor != allSensors.end()) {
+    if (sensor->second.get().isVisualSensor()) {
+      renderer_->visualize(
+          static_cast<sensor::VisualSensor&>(sensor->second.get()),
+          colorMapOffset, colorMapScale);
     }
     return true;
   }
   return false;
 }
 
-bool Simulator::getAgentObservation(const int agentId,
-                                    const std::string& sensorId,
-                                    sensor::Observation& observation) {
-  agent::Agent::ptr ag = getAgent(agentId);
-  if (ag != nullptr) {
-    return ag->getSubtreeSensorSuite().get(sensorId).getObservation(
-        *this, observation);
+bool Simulator::getSensorObservation(const std::string& sensorUuid,
+                                     sensor::Observation& observation) {
+  // TODO: This should be a global map lookup instead of a tree search
+  auto allSensors = getActiveSceneGraph().getRootNode().getSubtreeSensors();
+  auto sensor = allSensors.find(sensorUuid);
+
+  if (sensor != allSensors.end()) {
+    return sensor->second.get().getObservation(*this, observation);
   }
   return false;
 }
 
-int Simulator::getAgentObservations(
-    const int agentId,
-    std::map<std::string, sensor::Observation>& observations) {
-  observations.clear();
-  agent::Agent::ptr ag = getAgent(agentId);
-  if (ag != nullptr) {
-    for (auto& s : ag->getSubtreeSensors()) {
-      sensor::Observation obs;
-      if (s.second.get().getObservation(*this, obs)) {
-        observations[s.first] = obs;
-      }
-    }
-  }
-  return observations.size();
-}
+bool Simulator::getSensorObservationSpace(const std::string& sensorUuid,
+                                          sensor::ObservationSpace& space) {
+  // TODO: This should be a global map lookup instead of a tree search
+  auto allSensors = getActiveSceneGraph().getRootNode().getSubtreeSensors();
+  auto sensor = allSensors.find(sensorUuid);
 
-bool Simulator::getAgentObservationSpace(const int agentId,
-                                         const std::string& sensorId,
-                                         sensor::ObservationSpace& space) {
-  agent::Agent::ptr ag = getAgent(agentId);
-  if (ag != nullptr) {
-    return ag->getSubtreeSensorSuite().get(sensorId).getObservationSpace(space);
+  if (sensor != allSensors.end()) {
+    return sensor->second.get().getObservationSpace(space);
   }
   return false;
 }
 
-int Simulator::getAgentObservationSpaces(
-    const int agentId,
-    std::map<std::string, sensor::ObservationSpace>& spaces) {
-  spaces.clear();
-  agent::Agent::ptr ag = getAgent(agentId);
-  if (ag != nullptr) {
-    for (auto& s : ag->getSubtreeSensors()) {
-      sensor::ObservationSpace space;
-      if (s.second.get().getObservationSpace(space)) {
-        spaces[s.first] = space;
-      }
-    }
-  }
-  return spaces.size();
+std::vector<std::string> Simulator::getRuntimePerfStatNames() {
+  return {"num rigid",
+          "num active rigid",
+          "num artic",
+          "num active overlaps",
+          "num active contacts",
+          "num drawables",
+          "num faces"};
 }
+
+std::vector<float> Simulator::getRuntimePerfStatValues() {
+  int drawableCount = 0;
+  int drawableNumFaces = 0;
+  std::tie(drawableCount, drawableNumFaces) =
+      resourceManager_->getDrawableCountAndNumFaces();
+
+  runtimePerfStatValues_.clear();
+  runtimePerfStatValues_.push_back(physicsManager_->getNumRigidObjects());
+  runtimePerfStatValues_.push_back(physicsManager_->checkActiveObjects());
+  runtimePerfStatValues_.push_back(physicsManager_->getNumArticulatedObjects());
+  runtimePerfStatValues_.push_back(
+      physicsManager_->getNumActiveOverlappingPairs());
+  runtimePerfStatValues_.push_back(
+      physicsManager_->getNumActiveContactPoints());
+  runtimePerfStatValues_.push_back(drawableCount);
+  runtimePerfStatValues_.push_back(drawableNumFaces);
+
+  return runtimePerfStatValues_;
+}
+
 }  // namespace sim
 }  // namespace esp

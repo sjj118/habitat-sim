@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -12,7 +12,9 @@
 namespace esp {
 namespace core {
 
-// Enumeration of data
+/**
+ * @brief Enumeration of data
+ */
 enum class DataType {
   DT_NONE = 0,
   DT_INT8 = 1,
@@ -27,6 +29,9 @@ enum class DataType {
   DT_DOUBLE = 10,
 };
 
+/**
+ * @brief A class act as a data buffer.
+ */
 class Buffer {
  public:
   explicit Buffer() = default;

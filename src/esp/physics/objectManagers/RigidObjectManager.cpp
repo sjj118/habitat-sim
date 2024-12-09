@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -12,7 +12,7 @@ RigidObjectManager::RigidObjectManager()
   // build this manager's copy constructor map, keyed by the type name of the
   // wrappers it will manage
   this->copyConstructorMap_["ManagedRigidObject"] =
-      &RigidObjectManager::createObjectCopy<ManagedRigidObject>;
+      &RigidObjectManager::createObjCopyCtorMapEntry<ManagedRigidObject>;
 
   // build the function pointers to proper wrapper construction methods, keyed
   // by the wrapper names
@@ -20,7 +20,7 @@ RigidObjectManager::RigidObjectManager()
       &RigidObjectManager::createPhysicsObjectWrapper<ManagedRigidObject>;
 
   this->copyConstructorMap_["ManagedBulletRigidObject"] =
-      &RigidObjectManager::createObjectCopy<ManagedBulletRigidObject>;
+      &RigidObjectManager::createObjCopyCtorMapEntry<ManagedBulletRigidObject>;
   managedObjTypeConstructorMap_["ManagedBulletRigidObject"] =
       &RigidObjectManager::createPhysicsObjectWrapper<ManagedBulletRigidObject>;
 }
@@ -30,8 +30,8 @@ std::shared_ptr<ManagedRigidObject> RigidObjectManager::addObjectByHandle(
     scene::SceneNode* attachmentNode,
     const std::string& lightSetup) {
   if (auto physMgr = this->getPhysicsManager()) {
-    int newObjID =
-        physMgr->addObject(attributesHandle, attachmentNode, lightSetup);
+    int newObjID = physMgr->addObject(attributesHandle, nullptr, attachmentNode,
+                                      lightSetup);
     return this->getObjectCopyByID(newObjID);
   } else {
     return nullptr;
@@ -43,12 +43,23 @@ std::shared_ptr<ManagedRigidObject> RigidObjectManager::addObjectByID(
     scene::SceneNode* attachmentNode,
     const std::string& lightSetup) {
   if (auto physMgr = this->getPhysicsManager()) {
-    int newObjID = physMgr->addObject(attributesID, attachmentNode, lightSetup);
+    int newObjID =
+        physMgr->addObject(attributesID, nullptr, attachmentNode, lightSetup);
     return this->getObjectCopyByID(newObjID);
   } else {
     return nullptr;
   }
 }  // RigidObjectManager::addObject
+
+std::shared_ptr<ManagedRigidObject> RigidObjectManager::copyObjectByID(
+    int objectID) {
+  if (auto physMgr = this->getPhysicsManager()) {
+    int newObjID = physMgr->cloneExistingObject(objectID);
+    return this->getObjectCopyByID(newObjID);
+  } else {
+    return nullptr;
+  }
+}  // RigidObjectManager::copyObjectByID
 
 std::shared_ptr<ManagedRigidObject> RigidObjectManager::removePhysObjectByID(
     int objectID,

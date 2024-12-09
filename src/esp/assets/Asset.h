@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -15,42 +15,67 @@ namespace esp {
 //! Asset management namespace
 namespace assets {
 
-//! Supported Asset types
-enum class AssetType {
-  UNKNOWN,
-  MP3D_MESH,
-  INSTANCE_MESH,
-  FRL_PTEX_MESH,
-  UNKNOWN2,
-  NAVMESH,
-  PRIMITIVE,
-};
-
-// loading and asset info with filepath == EMPTY_SCENE creates a scene graph
-// with no scene mesh (ie. an empty scene)
-static const std::string EMPTY_SCENE = "NONE";
-
-//! stores basic Phong compatible color properties for procedural override
-//! material construction
+/**
+ * @brief stores basic Phong compatible color properties for procedural override
+ * material construction
+ */
 struct PhongMaterialColor {
+  /**
+   * @brief the ambient color of the Phong material
+   */
   Magnum::Color4 ambientColor{0.1};
+  /**
+   * @brief the diffuse color of the Phong material
+   */
   Magnum::Color4 diffuseColor{0.7};
+  /**
+   * @brief the specular color of the Phong material
+   */
   Magnum::Color4 specularColor{0.2};
 };
-
+/**
+ * @brief Verify @ref PhongMaterialColor equality.
+ */
 bool operator==(const PhongMaterialColor& a, const PhongMaterialColor& b);
+/**
+ * @brief Verify @ref PhongMaterialColor inequality.
+ */
 bool operator!=(const PhongMaterialColor& a, const PhongMaterialColor& b);
 
-//! AssetInfo stores information necessary to identify and load an Asset
+/**
+ * @brief AssetInfo stores information necessary to identify and load an Asset
+ */
 struct AssetInfo {
-  AssetType type = AssetType::UNKNOWN;
-  std::string filepath = EMPTY_SCENE;  // empty scene
+  /**
+   * @brief The type of the asset
+   */
+  metadata::attributes::AssetType type =
+      metadata::attributes::AssetType::Unknown;
+  /**
+   * @brief The path to the asset's source on disk
+   */
+  std::string filepath = esp::EMPTY_SCENE;  // empty scene
+  /**
+   * The @ref esp::geo::CoordinateFrame describing the default orientation of the asset
+   */
   geo::CoordinateFrame frame{};
+  /**
+   * @brief Conversion factor from units specified in asset source to meters
+   */
   float virtualUnitToMeters = 1.0f;
-  bool forceFlatShading = true;
-  bool splitInstanceMesh = true;  // only applies to AssetType::INSTANCE_MESH
 
-  //! if set, override the asset material with a procedural Phong material
+  /**
+   * @brief Whether to force this asset to be flat shaded.
+   */
+  bool forceFlatShading = true;
+  /**
+   * @brief Whether supported semantic meshes should be split
+   */
+  bool splitInstanceMesh = true;  // only applies to AssetType::InstanceMesh
+
+  /**
+   * @brief if set, override the asset material with a procedural Phong material
+   */
   Cr::Containers::Optional<PhongMaterialColor> overridePhongMaterial =
       Cr::Containers::NullOpt;
   /**
@@ -75,10 +100,18 @@ struct AssetInfo {
 
   ESP_SMART_POINTERS(AssetInfo)
 };
+/**
+ * @brief Verify @ref AssetInfo equality.
+ */
 bool operator==(const AssetInfo& a, const AssetInfo& b);
+/**
+ * @brief Verify @ref AssetInfo equality.
+ */
 bool operator!=(const AssetInfo& a, const AssetInfo& b);
 
-//! Wrapper for all valid asset types
+/**
+ * @brief Wrapper for all valid asset types
+ */
 template <typename T>
 struct Asset {
   //! Create Asset wrapper given AssetInfo and created asset
@@ -91,7 +124,13 @@ struct Asset {
   T& get() { return asset_; }
 
  protected:
+  /**
+   * @brief The @ref AssetInfo for this asset
+   */
   AssetInfo info_;
+  /**
+   * @brief the asset
+   */
   T& asset_;
   ESP_SMART_POINTERS(Asset)
 };

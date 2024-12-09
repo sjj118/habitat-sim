@@ -1,3 +1,7 @@
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
 #include "esp/bindings/Bindings.h"
 #include "esp/bindings/EnumOperators.h"
 #include "esp/physics/PhysicsManager.h"
@@ -205,7 +209,7 @@ void initPhysicsBindings(py::module& m) {
       .value("UserGroup7", CollisionGroup::UserGroup7)
       .value("UserGroup8", CollisionGroup::UserGroup8)
       .value("UserGroup9", CollisionGroup::UserGroup9)
-      .value("None", CollisionGroup{});
+      .value("NoneGroup", CollisionGroup{});
   pybindEnumOperators(collisionGroups);
 
   // ==== class object CollisionGroupHelper ====

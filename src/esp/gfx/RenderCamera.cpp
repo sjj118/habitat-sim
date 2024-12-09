@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -9,8 +9,6 @@
 #include <Magnum/Math/Intersection.h>
 #include <Magnum/Math/Range.h>
 #include <Magnum/SceneGraph/Drawable.h>
-#include "esp/gfx/Drawable.h"
-#include "esp/gfx/DrawableGroup.h"
 #include "esp/scene/SceneGraph.h"
 
 namespace Mn = Magnum;
@@ -21,11 +19,11 @@ namespace gfx {
 
 /**
  * @brief do frustum culling with temporal coherence
- * @param range, the axis-aligned bounding box
- * @param frustum, the frustum
- * @param frustumPlaneIndex, the frustum plane in last frame that culled the
+ * @param range the axis-aligned bounding box
+ * @param frustum the frustum
+ * @param frustumPlaneIndex the frustum plane in last frame that culled the
  * aabb (default: 0)
- * @return NullOpt if aabb intersects the frustum, otherwise the fustum plane
+ * @return NullOpt if aabb intersects the frustum, otherwise the frustum plane
  * that culls the aabb
  */
 Cr::Containers::Optional<int> rangeFrustum(const Mn::Range3D& range,
@@ -42,33 +40,40 @@ Cr::Containers::Optional<int> rangeFrustum(const Mn::Range3D& range,
 
     const float d = Mn::Math::dot(center, plane.xyz());
     const float r = Mn::Math::dot(extent, absPlaneNormal);
-    if (d + r < -2.0 * plane.w())
+    if (d + r < -2.0f * plane.w())
       return Cr::Containers::Optional<int>{index};
   }
 
   return Cr::Containers::NullOpt;
 }
 
-RenderCamera::RenderCamera(scene::SceneNode& node) : MagnumCamera{node} {
-  node.setType(scene::SceneNodeType::CAMERA);
+RenderCamera::RenderCamera(scene::SceneNode& node,
+                           esp::scene::SceneNodeSemanticDataIDX semanticDataIDX)
+    : MagnumCamera{node}, semanticInfoIDX_(semanticDataIDX) {
+  // Set to using the base semantic idx assigned to this camera
+  semanticIDXToUse_ = semanticInfoIDX_;
+  node.setType(scene::SceneNodeType::Camera);
   setAspectRatioPolicy(Mn::SceneGraph::AspectRatioPolicy::NotPreserved);
 }
 
 RenderCamera::RenderCamera(scene::SceneNode& node,
+                           esp::scene::SceneNodeSemanticDataIDX semanticDataIDX,
                            const Mn::Vector3& eye,
                            const Mn::Vector3& target,
                            const Mn::Vector3& up)
 
-    : RenderCamera(node) {
+    : RenderCamera(node, semanticDataIDX) {
   // once it is attached, set the transformation
   resetViewingParameters(eye, target, up);
 }
 
 RenderCamera::RenderCamera(scene::SceneNode& node,
+                           esp::scene::SceneNodeSemanticDataIDX semanticDataIDX,
                            const vec3f& eye,
                            const vec3f& target,
                            const vec3f& up)
     : RenderCamera(node,
+                   semanticDataIDX,
                    Mn::Vector3{eye},
                    Mn::Vector3{target},
                    Mn::Vector3{up}) {}
@@ -141,7 +146,7 @@ size_t RenderCamera::removeNonObjects(DrawableTransforms& drawableTransforms) {
                           Mn::Matrix4>& a) {
         auto& node = static_cast<scene::SceneNode&>(a.first.get().object());
         // don't remove OBJECT types
-        return (node.getType() != scene::SceneNodeType::OBJECT);
+        return (node.getType() != scene::SceneNodeType::Object);
       });
   return (newEndIter - drawableTransforms.begin());
 }
@@ -151,14 +156,13 @@ uint32_t RenderCamera::draw(DrawableTransforms& drawableTransforms,
   previousNumVisibleDrawables_ = drawableTransforms.size();
 
   if (flags & Flag::UseDrawableIdAsObjectId) {
-    useDrawableIds_ = true;
+    semanticIDXToUse_ = esp::scene::SceneNodeSemanticDataIDX::DrawableID;
   }
 
   MagnumCamera::draw(drawableTransforms);
 
-  if (useDrawableIds_) {
-    useDrawableIds_ = false;
-  }
+  // Reset to using the base semantic idx assigned to this camera
+  semanticIDXToUse_ = semanticInfoIDX_;
 
   return drawableTransforms.size();
 }
@@ -171,10 +175,6 @@ uint32_t RenderCamera::draw(MagnumDrawableGroup& drawables, Flags flags) {
 
 size_t RenderCamera::filterTransforms(DrawableTransforms& drawableTransforms,
                                       Flags flags) {
-  if (flags & Flag::UseDrawableIdAsObjectId) {
-    useDrawableIds_ = true;
-  }
-
   if (flags & Flag::ObjectsOnly) {
     // draw just the OBJECTS
     size_t numObjects = removeNonObjects(drawableTransforms);
@@ -191,13 +191,11 @@ size_t RenderCamera::filterTransforms(DrawableTransforms& drawableTransforms,
         drawableTransforms.end());
   }
 
-  if (useDrawableIds_) {
-    useDrawableIds_ = false;
-  }
   return drawableTransforms.size();
 }
 
-esp::geo::Ray RenderCamera::unproject(const Mn::Vector2i& viewportPosition) {
+esp::geo::Ray RenderCamera::unproject(const Mn::Vector2i& viewportPosition,
+                                      bool normalized) {
   esp::geo::Ray ray;
   ray.origin = object().absoluteTranslation();
 
@@ -208,12 +206,23 @@ esp::geo::Ray RenderCamera::unproject(const Mn::Vector2i& viewportPosition) {
       2 * Magnum::Vector2{viewPos} / Magnum::Vector2{viewport()} -
           Magnum::Vector2{1.0f},
       1.0};
+  const Mn::Matrix4 projMat = projectionMatrix();
+
+  // compute the far plane distance
+  // If projMat[3][3] == 0 then perspective, otherwise ortho
+  const Mn::Float farDistance =
+      (projMat[3][3] == 0 ? projMat.perspectiveProjectionFar()
+                          : projMat.orthographicProjectionFar());
 
   ray.direction =
-      ((object().absoluteTransformationMatrix() * projectionMatrix().inverted())
+      ((object().absoluteTransformationMatrix() * invertedProjectionMatrix)
            .transformPoint(normalizedPos) -
-       ray.origin)
-          .normalized();
+       ray.origin) /
+      farDistance;
+
+  if (normalized) {
+    ray.direction = ray.direction.normalized();
+  }
   return ray;
 }
 

@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -12,10 +12,10 @@ namespace physics {
 
 /**
  * @brief Class template defining responsibilities and functionality shared for
- * managing all @ref esp::physics::ManagedRigidBase wrappers.
+ * managing all @ref esp::physics::AbstractManagedRigidBase wrappers.
  * @tparam T the type of managed physics object a particular specialization
  * of this class works with.  Must inherit from @ref
- * esp::physics::ManagedRigidBase
+ * esp::physics::AbstractManagedRigidBase
  */
 
 template <class T>

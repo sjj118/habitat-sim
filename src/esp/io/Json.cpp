@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -86,9 +86,12 @@ JsonDocument parseJsonString(const std::string& jsonString) {
   return d;
 }
 
-std::string jsonToString(const JsonDocument& d) {
+std::string jsonToString(const JsonDocument& d, int maxDecimalPlaces) {
   rapidjson::StringBuffer buffer{};
   rapidjson::Writer<rapidjson::StringBuffer> writer{buffer};
+  if (maxDecimalPlaces != -1) {
+    writer.SetMaxDecimalPlaces(maxDecimalPlaces);
+  }
   d.Accept(writer);
   return buffer.GetString();
 }

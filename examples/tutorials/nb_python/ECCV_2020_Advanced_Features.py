@@ -1,18 +1,9 @@
 # ---
 # jupyter:
 #   accelerator: GPU
-#   colab:
-#     collapsed_sections:
-#     - dw0hKCHX9dii
-#     - LfhL_ZcW-HsF
-#     - -dFprz9y_HSQ
-#     - twCl8wAR_R4d
-#     name: 'ECCV 2020: Habitat-sim Advanced Features'
-#     private_outputs: true
-#     provenance: []
 #   jupytext:
 #     cell_metadata_filter: -all
-#     formats: nb_python//py:percent,colabs//ipynb
+#     formats: nb_python//py:percent,notebooks//ipynb
 #     notebook_metadata_filter: all
 #     text_representation:
 #       extension: .py
@@ -20,15 +11,23 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.13.7
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3 (ipykernel)
+#     language: python
 #     name: python3
+#   language_info:
+#     codemirror_mode:
+#       name: ipython
+#       version: 3
+#     file_extension: .py
+#     mimetype: text/x-python
+#     name: python
+#     nbconvert_exporter: python
+#     pygments_lexer: ipython3
+#     version: 3.9.17
 # ---
 
 # %% [markdown]
-# <a href="https://colab.research.google.com/github/facebookresearch/habitat-sim/blob/main/examples/tutorials/colabs/ECCV_2020_Advanced_Features.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
-
-# %% [markdown]
-# #Habitat-sim Advanced Features
+# # Habitat-sim Advanced Features
 #
 # This tutorial presents a number of advanced feature examples for using Habitat-sim, including:
 #
@@ -38,21 +37,13 @@
 # - Object/Asset configuration via template libraries
 
 # %%
-# @title Installation { display-mode: "form" }
-# @markdown (double click to show code).
-
-# !curl -L https://raw.githubusercontent.com/facebookresearch/habitat-sim/main/examples/colab_utils/colab_install.sh | NIGHTLY=true bash -s
-
-# %%
 # @title Path Setup and Imports { display-mode: "form" }
 # @markdown (double click to show code).
 
-# %cd /content/habitat-sim
 ## [setup]
 import math
 import os
 import random
-import sys
 
 import git
 import magnum as mn
@@ -76,20 +67,14 @@ try:
 except ImportError:
     HAS_WIDGETS = False
 
-
-if "google.colab" in sys.modules:
-    os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
-
 repo = git.Repo(".", search_parent_directories=True)
 dir_path = repo.working_tree_dir
-# %cd $dir_path
 data_path = os.path.join(dir_path, "data")
 # fmt: off
 output_directory = "examples/tutorials/advanced_features_output/"  # @param {type:"string"}
 # fmt: on
 output_path = os.path.join(dir_path, output_directory)
-if not os.path.exists(output_path):
-    os.mkdir(output_path)
+os.makedirs(output_path, exist_ok=True)
 
 # define some globals the first time we run.
 if "sim" not in globals():
@@ -110,6 +95,7 @@ if "sim" not in globals():
 # @markdown (double click to show code)
 
 # @markdown This cell defines utility functions that expose Attribute template object properties.
+
 
 # This method builds a dictionary of k-v pairs of attribute property names and
 # values shared by all attribute template types.  The values are tuples with the
@@ -160,8 +146,8 @@ def build_dict_of_PhyObj_attrs(phys_obj_template):
         "boolean",
     )
     # New fields, uncomment upon updating conda 8/4/20
-    res_dict["orient_up"] = (phys_obj_template.orient_up, True, "vector")
-    res_dict["orient_front"] = (phys_obj_template.orient_front, True, "vector")
+    res_dict["up"] = (phys_obj_template.orient_up, True, "vector")
+    res_dict["front"] = (phys_obj_template.orient_front, True, "vector")
     res_dict["units_to_meters"] = (phys_obj_template.units_to_meters, True, "double")
     res_dict["render_asset_type"] = (phys_obj_template.render_asset_type, True, "int")
     res_dict["collision_asset_type"] = (
@@ -185,7 +171,11 @@ def build_dict_of_PhyObj_attrs(phys_obj_template):
         False,
         "boolean",
     )
-    res_dict["is_dirty"] = (phys_obj_template.is_dirty, False, "boolean")
+    res_dict["filenames_are_dirty"] = (
+        phys_obj_template.filenames_are_dirty,
+        False,
+        "boolean",
+    )
     return res_dict
 
 
@@ -242,7 +232,7 @@ def build_dict_of_Stage_attrs(scene_template):
     )
     res_dict["house_filename"] = (scene_template.house_filename, True, "string")
     # res_dict["light_setup"] = (scene_template.light_setup, True, "string")
-    # res_dict["frustrum_culling"] = (scene_template.frustrum_culling, True, "boolean")
+    # res_dict["frustum_culling"] = (scene_template.frustum_culling, True, "boolean")
     return res_dict
 
 
@@ -488,7 +478,7 @@ def make_cfg(settings):
             settings["sensor_height"] + 0.2,
             0.2,
         ]
-        color_sensor_3rd_person_spec.orientation = [-math.pi / 4, 0, 0]
+        color_sensor_3rd_person_spec.orientation = [-math.pi / 4, 0.0, 0.0]
         color_sensor_3rd_person_spec.sensor_subtype = habitat_sim.SensorSubType.PINHOLE
         sensor_specs.append(color_sensor_3rd_person_spec)
 
@@ -503,7 +493,12 @@ def make_default_settings():
     settings = {
         "width": 720,  # Spatial resolution of the observations
         "height": 544,
-        "scene": "./data/scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb",  # Scene path
+        "scene": os.path.join(
+            data_path, "scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb"
+        ),  # Scene path
+        "scene_dataset": os.path.join(
+            data_path, "scene_datasets/mp3d_example/mp3d.scene_dataset_config.json"
+        ),  # mp3d scene dataset
         "default_agent": 0,
         "sensor_height": 1.5,  # Height of sensors in meters
         "sensor_pitch": -math.pi / 8.0,  # sensor pitch (x rotation in rads)
@@ -583,8 +578,8 @@ def init_camera_track_config(sim, sensor_name="color_sensor_1st_person", agent_I
     init_state["position"] = np.array(visual_sensor._spec.position)
     init_state["orientation"] = np.array(visual_sensor._spec.orientation)
     # set the color sensor transform to be the agent transform
-    visual_sensor._spec.position = np.array([0, 0, 0])
-    visual_sensor._spec.orientation = np.array([0, 0, 0])
+    visual_sensor._spec.position = mn.Vector3(0.0, 0.0, 0.0)
+    visual_sensor._spec.orientation = mn.Vector3(0.0, 0.0, 0.0)
     visual_sensor._sensor_object.set_transformation_from_spec()
     # save ID of agent being modified
     init_state["agent_ID"] = agent_ID
@@ -657,6 +652,7 @@ def set_object_state_from_agent(
 # @markdown (double click to show code)
 # @markdown - display_sample
 
+
 # Change to do something like this maybe: https://stackoverflow.com/a/41432704
 def display_sample(
     rgb_obs, semantic_obs=np.array([]), depth_obs=np.array([]), key_points=None
@@ -712,10 +708,11 @@ else:
 
 
 # %%
-# @title Define Colab GUI Utility Functions { display-mode: "form" }
+# @title Define GUI Utility Functions { display-mode: "form" }
 # @markdown (double click to show code)
 
 # @markdown This cell provides utility functions to build and manage IPyWidget interactive components.
+
 
 # Event handler for dropdowns displaying file-based object handles
 def on_file_obj_ddl_change(ddl_values):
@@ -852,8 +849,10 @@ def build_widget_ui(obj_attr_mgr, prim_attr_mgr):
 # %%
 # @title Initialize Simulator and Load Scene { display-mode: "form" }
 sim_settings = make_default_settings()
-sim_settings["scene"] = "./data/scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb"
-sim_settings["sensor_pitch"] = 0
+sim_settings["scene"] = os.path.join(
+    data_path, "scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb"
+)
+sim_settings["sensor_pitch"] = 0.0
 
 make_simulator_from_settings(sim_settings)
 
@@ -875,8 +874,8 @@ visual_sensor = sim._sensors["color_sensor_1st_person"]
 initial_sensor_position = np.array(visual_sensor._spec.position)
 initial_sensor_orientation = np.array(visual_sensor._spec.orientation)
 # set the color sensor transform to be the agent transform
-visual_sensor._spec.position = np.array([0, 0, 0])
-visual_sensor._spec.orientation = np.array([0, 0, 0])
+visual_sensor._spec.position = mn.Vector3(0.0, 0.0, 0.0)
+visual_sensor._spec.orientation = mn.Vector3(0.0, 0.0, 0.0)
 visual_sensor._sensor_object.set_transformation_from_spec()
 
 # boost the agent off the floor
@@ -935,6 +934,7 @@ rigid_obj_mgr.remove_all_objects()
 # ## Advanced Topic : 3D to 2D Key-point Projection
 #
 # The Habitat-sim visual-sensor API makes it easy to project 3D points into 2D for use cases such as generating ground-truth for image space key-points.
+
 
 # %%
 # @markdown ###Display 2D Projection of Object COMs
@@ -1007,8 +1007,10 @@ rigid_obj_mgr.remove_all_objects()
 # @markdown ###Configuring Object Semantic IDs:
 
 sim_settings = make_default_settings()
-sim_settings["scene"] = "./data/scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb"
-sim_settings["sensor_pitch"] = 0
+sim_settings["scene"] = os.path.join(
+    data_path, "scene_datasets/mp3d_example/17DRP5sb8fy/17DRP5sb8fy.glb"
+)
+sim_settings["sensor_pitch"] = 0.0
 sim_settings["semantic_sensor_1st_person"] = True
 
 make_simulator_from_settings(sim_settings)
@@ -1096,8 +1098,10 @@ rigid_obj_mgr.remove_all_objects()
 # @title Initialize Simulator and Load Scene { display-mode: "form" }
 # @markdown (load the apartment_1 scene for object and primitive asset customization in an open space)
 sim_settings = make_default_settings()
-sim_settings["scene"] = "./data/scene_datasets/habitat-test-scenes/apartment_1.glb"
-sim_settings["sensor_pitch"] = 0
+sim_settings["scene"] = os.path.join(
+    data_path, "scene_datasets/habitat-test-scenes/apartment_1.glb"
+)
+sim_settings["sensor_pitch"] = 0.0
 
 make_simulator_from_settings(sim_settings)
 
@@ -1400,6 +1404,7 @@ make_clear_all_objects_button()
 # Primitive Asset Attributes Manager, provides access to AssetAttributesTemplates
 prim_attr_mgr = sim.get_asset_template_manager()
 
+
 # This will register a primitive template if valid, and add it to a passed
 # dictionary of handles; If not valid it will give a message
 def register_prim_template_if_valid(
@@ -1517,7 +1522,7 @@ def edit_wf_capsule(edit_template):
 edit_wf_capsule(capsule_wireframe_template)
 
 # %% [markdown]
-# ####2.2 Cone Primitive : Cone of radius 1.0f along the Y axis, centered at origin.
+# #### 2.2 Cone Primitive : Cone of radius 1.0f along the Y axis, centered at origin.
 #
 
 # %%
@@ -1583,7 +1588,7 @@ def edit_wireframe_cone(edit_template):
 edit_wireframe_cone(cone_wireframe_template)
 
 # %% [markdown]
-# ####2.3 Cylinder Primitive : Cylinder of radius 1.0f along the Y axis, centered at origin.
+# #### 2.3 Cylinder Primitive : Cylinder of radius 1.0f along the Y axis, centered at origin.
 
 # %%
 # @title ####2.3.1 Solid Cylinder : { display-mode: "form" }
@@ -1654,7 +1659,7 @@ def edit_wireframe_cylinder(edit_template):
 edit_wireframe_cylinder(cylinder_wireframe_template)
 
 # %% [markdown]
-# ####2.4 Icosphere Primitive : Icosahedron-based sphere of radius 1.0f, centered at the origin.
+# #### 2.4 Icosphere Primitive : Icosahedron-based sphere of radius 1.0f, centered at the origin.
 #
 # Only solid icospheres have any editable geometric parameters.
 
@@ -1682,7 +1687,7 @@ def edit_solid_icosphere(edit_template):
 edit_solid_icosphere(icosphere_solid_template)
 
 # %% [markdown]
-# ####2.5 UVSphere Primitive : Sphere of radius 1.0f, centered at the origin.
+# #### 2.5 UVSphere Primitive : Sphere of radius 1.0f, centered at the origin.
 
 # %%
 # @title ####2.5.1 Solid UVSphere : { display-mode: "form" }
@@ -1745,7 +1750,7 @@ def edit_wireframe_UVSphere(edit_template):
 edit_wireframe_UVSphere(UVSphere_wireframe_template)
 
 # %% [markdown]
-# ####2.6 Instancing Objects with Modified Primitive-Asset Attributes.
+# #### 2.6 Instancing Objects with Modified Primitive-Asset Attributes.
 
 # %%
 # @title ####Using the modifications set in the previous cells, instantiate examples of all available solid and wireframe primitives.{ display-mode: "form" }
@@ -1806,11 +1811,11 @@ make_clear_all_objects_button()
 #
 # In addition to the topics we covered here, visit the Habitat-sim [python docs](https://aihabitat.org/docs/habitat-sim/) to explore more topics.
 #
-# ###Custom Lighting Setups
+# ### Custom Lighting Setups
 #
 # Habitat-sim allows for both Phong and Flat shading options and configurable lighting groups for objects and scenes to be customized. See our [Working with Lights tutorial page](https://aihabitat.org/docs/habitat-sim/lighting-setups.html) to learn more.
 #
-# ###Interactive Rigid Objects
+# ### Interactive Rigid Objects
 #
 # For more details on the rigid object API, see our [Interactive Rigid Objects tutorial](https://aihabitat.org/docs/habitat-sim/rigid-object-tutorial.html).
 #

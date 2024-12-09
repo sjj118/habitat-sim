@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -9,9 +9,7 @@
 
 #include <Magnum/PythonBindings.h>
 #include <Magnum/SceneGraph/PythonBindings.h>
-
 #include "esp/scene/Mp3dSemanticScene.h"
-#include "esp/scene/ObjectControls.h"
 #include "esp/scene/SceneGraph.h"
 #include "esp/scene/SceneManager.h"
 #include "esp/scene/SceneNode.h"
@@ -19,10 +17,61 @@
 namespace py = pybind11;
 using py::literals::operator""_a;
 
+namespace Mn = Magnum;
 namespace esp {
 namespace scene {
 
-void initSceneBindings(py::module& m) {
+py::class_<esp::scene::SceneNode,
+           Magnum::SceneGraph::PyObject<esp::scene::SceneNode>,
+           Magnum::SceneGraph::Object<
+               Magnum::SceneGraph::
+                   BasicTranslationRotationScalingTransformation3D<float>>,
+           Magnum::SceneGraph::PyObjectHolder<esp::scene::SceneNode>>
+createSceneNodeBind(py::module& m) {
+  // ==== SceneNode ====
+  py::class_<esp::scene::SceneNode,
+             Magnum::SceneGraph::PyObject<esp::scene::SceneNode>,
+             Magnum::SceneGraph::Object<
+                 Magnum::SceneGraph::
+                     BasicTranslationRotationScalingTransformation3D<float>>,
+             Magnum::SceneGraph::PyObjectHolder<esp::scene::SceneNode>>
+      pySceneNode(m, "SceneNode", R"(
+      SceneNode: a node in the scene graph.
+
+      Cannot apply a smart pointer to a SceneNode object.
+      You can "create it and forget it".
+      Simulator backend will handle the memory.)");
+
+  py::class_<SceneGraph>(m, "SceneGraph")
+      .def(py::init())
+      .def("get_root_node",
+           py::overload_cast<>(&SceneGraph::getRootNode, py::const_),
+           R"(
+            Get the root node of the scene graph.
+
+            User can specify transformation of the root node w.r.t. the world
+            frame. (const function) PYTHON DOES NOT GET OWNERSHIP)",
+           py::return_value_policy::reference)
+      .def("get_root_node", py::overload_cast<>(&SceneGraph::getRootNode),
+           R"(
+            Get the root node of the scene graph.
+
+            User can specify transformation of the root node w.r.t. the world
+            frame. PYTHON DOES NOT GET OWNERSHIP)",
+           py::return_value_policy::reference);
+
+  return pySceneNode;
+}  // createSceneNodeBind
+
+void initSceneBindings(
+    py::module& m,
+    py::class_<esp::scene::SceneNode,
+               Magnum::SceneGraph::PyObject<esp::scene::SceneNode>,
+               Magnum::SceneGraph::Object<
+                   Magnum::SceneGraph::
+                       BasicTranslationRotationScalingTransformation3D<float>>,
+               Magnum::SceneGraph::PyObjectHolder<esp::scene::SceneNode>>&
+        pySceneNode) {
   // ==== SceneGraph ====
 
   // !!Warning!!
@@ -35,25 +84,26 @@ void initSceneBindings(py::module& m) {
 
   // ==== enum SceneNodeType ====
   py::enum_<SceneNodeType>(m, "SceneNodeType")
-      .value("EMPTY", SceneNodeType::EMPTY)
-      .value("SENSOR", SceneNodeType::SENSOR)
-      .value("AGENT", SceneNodeType::AGENT)
-      .value("CAMERA", SceneNodeType::CAMERA)
-      .value("OBJECT", SceneNodeType::OBJECT);
+      .value("EMPTY", SceneNodeType::Empty)
+      .value("SENSOR", SceneNodeType::Sensor)
+      .value("AGENT", SceneNodeType::Agent)
+      .value("CAMERA", SceneNodeType::Camera)
+      .value("OBJECT", SceneNodeType::Object);
 
-  // ==== SceneNode ====
-  py::class_<SceneNode, Magnum::SceneGraph::PyObject<SceneNode>, MagnumObject,
-             Magnum::SceneGraph::PyObjectHolder<SceneNode>>(m, "SceneNode", R"(
-      SceneNode: a node in the scene graph.
-
-      Cannot apply a smart pointer to a SceneNode object.
-      You can "create it and forget it".
-      Simulator backend will handle the memory.)")
+  pySceneNode
       .def(py::init_alias<std::reference_wrapper<SceneNode>>(),
            R"(Constructor: creates a scene node, and sets its parent.)")
       .def_property("type", &SceneNode::getType, &SceneNode::setType)
       .def_property("semantic_id", &SceneNode::getSemanticId,
                     &SceneNode::setSemanticId)
+      .def_property(
+          "object_semantic_id", &SceneNode::getBaseObjectId,
+          &SceneNode::setBaseObjectId,
+          R"(This node's owning object's ID, for instance-based semantics)")
+      .def_property(
+          "drawable_semantic_id", &SceneNode::getDrawableId,
+          &SceneNode::setDrawableId,
+          R"(This node's drawable's ID, for instance-based semantics)")
       .def(
           "create_child", [](SceneNode& self) { return &self.createChild(); },
           R"(Creates a child node, and sets its parent to the current node.)")
@@ -85,24 +135,6 @@ void initSceneBindings(py::module& m) {
       .def_property_readonly("subtree_sensors", &SceneNode::getSubtreeSensors,
                              R"(Get subtree sensors of this SceneNode)");
 
-  py::class_<SceneGraph>(m, "SceneGraph")
-      .def(py::init())
-      .def("get_root_node",
-           py::overload_cast<>(&SceneGraph::getRootNode, py::const_),
-           R"(
-            Get the root node of the scene graph.
-
-            User can specify transformation of the root node w.r.t. the world
-            frame. (const function) PYTHON DOES NOT GET OWNERSHIP)",
-           pybind11::return_value_policy::reference)
-      .def("get_root_node", py::overload_cast<>(&SceneGraph::getRootNode),
-           R"(
-            Get the root node of the scene graph.
-
-            User can specify transformation of the root node w.r.t. the world
-            frame. PYTHON DOES NOT GET OWNERSHIP)",
-           pybind11::return_value_policy::reference);
-
   // ==== SceneManager ====
   py::class_<SceneManager>(m, "SceneManager")
       .def("init_scene_graph", &SceneManager::initSceneGraph,
@@ -114,14 +146,14 @@ void initSceneBindings(py::module& m) {
              Get the scene graph by scene graph ID.
 
              PYTHON DOES NOT GET OWNERSHIP)",
-           "sceneGraphID"_a, pybind11::return_value_policy::reference)
+           "sceneGraphID"_a, py::return_value_policy::reference)
       .def("get_scene_graph",
            py::overload_cast<int>(&SceneManager::getSceneGraph, py::const_),
            R"(
              Get the scene graph by scene graph ID.
 
              PYTHON DOES NOT GET OWNERSHIP)",
-           "sceneGraphID"_a, pybind11::return_value_policy::reference);
+           "sceneGraphID"_a, py::return_value_policy::reference);
 
   // ==== SemanticCategory ====
   py::class_<SemanticCategory, SemanticCategory::ptr>(m, "SemanticCategory")
@@ -140,11 +172,22 @@ void initSceneBindings(py::module& m) {
       .def("index", &Mp3dRegionCategory::index, "mapping"_a = "")
       .def("name", &Mp3dRegionCategory::name, "mapping"_a = "");
 
-  // These two are (cyclically) referenced by multiple classes below, define
+  // === Polyloop-based Semantic Region Category ===
+  py::class_<LoopRegionCategory, SemanticCategory, LoopRegionCategory::ptr>(
+      m, "LoopRegionCategory")
+      .def("index", &LoopRegionCategory::index, "mapping"_a = "")
+      .def("name", &LoopRegionCategory::name, "mapping"_a = "");
+
+  // These are (cyclically) referenced by multiple classes below, define
   // the classes first so pybind has the type definition available when binding
   // functions
   py::class_<SemanticObject, SemanticObject::ptr> semanticObject(
       m, "SemanticObject");
+  py::class_<CCSemanticObject, SemanticObject, CCSemanticObject::ptr>
+      ccSemanticObject(
+          m, "CCSemanticObject",
+          "This class exists to facilitate semantic object data access for "
+          "bboxes derived from connected component analysis.");
   py::class_<SemanticRegion, SemanticRegion::ptr> semanticRegion(
       m, "SemanticRegion");
 
@@ -159,13 +202,30 @@ void initSceneBindings(py::module& m) {
   semanticRegion
       .def_property_readonly(
           "id", &SemanticRegion::id,
-          "The ID of the region, of the form ``<level_id>_<region_id>``")
+          "The ID of the region, either as the region's unique name, or of the "
+          "form ``<level_id>_<region_id>``")
       .def_property_readonly("level", &SemanticRegion::level)
       .def_property_readonly("aabb", &SemanticRegion::aabb)
       .def_property_readonly("category", &SemanticRegion::category,
                              "The semantic category of the region")
       .def_property_readonly("objects", &SemanticRegion::objects,
-                             "All objects in the region");
+                             "All objects in the region")
+      .def_property_readonly("poly_loop_points",
+                             &SemanticRegion::getPolyLoopPoints,
+                             "The points making up the polyloop for this "
+                             "region, coplanar and parallel to the floor.")
+      .def_property_readonly(
+          "volume_edges", &SemanticRegion::getVisEdges,
+          "The edges, as pairs of points, that determine "
+          "the boundaries of the region. For visualizations.")
+      .def_property_readonly("floor_height", &SemanticRegion::getFloorHeight,
+                             "The height above the x-z plane for the floor of "
+                             "the semantic region.")
+      .def_property_readonly("extrusion_height",
+                             &SemanticRegion::getExtrusionHeight,
+                             "The height of the extrusion above the floor.")
+      .def("contains", &SemanticRegion::contains, "point"_a,
+           "Check whether the given point is contained in the given region.");
 
   // ==== SemanticObject ====
   semanticObject
@@ -177,6 +237,15 @@ void initSceneBindings(py::module& m) {
       .def_property_readonly("aabb", &SemanticObject::aabb)
       .def_property_readonly("obb", &SemanticObject::obb)
       .def_property_readonly("category", &SemanticObject::category);
+
+  // ==== CCSemanticObject =====
+  ccSemanticObject
+      .def_property_readonly("num_src_verts", &CCSemanticObject::getNumSrcVerts,
+                             "The number of vertices in the connected "
+                             "component making up this semantic object.")
+      .def_property_readonly("vert_set", &CCSemanticObject::getVertSet,
+                             "A set of the vertices in the connected component "
+                             "making up this semantic object.");
 
   // ==== SemanticScene ====
   py::class_<SemanticScene, SemanticScene::ptr>(m, "SemanticScene")
@@ -197,25 +266,36 @@ void initSceneBindings(py::module& m) {
           "file"_a, "scene"_a, "rotation"_a)
       .def_property_readonly("aabb", &SemanticScene::aabb)
       .def_property_readonly("categories", &SemanticScene::categories,
-                             "All semantic categories in the house")
+                             "All semantic categories in the scene")
       .def_property_readonly("levels", &SemanticScene::levels,
-                             "All levels in the house")
+                             "All levels in the scene")
       .def_property_readonly("regions", &SemanticScene::regions,
-                             "All regions in the house")
+                             "All regions in the scene")
       .def_property_readonly("objects", &SemanticScene::objects,
-                             "All object in the house")
+                             "All object in the scene")
       .def_property_readonly("semantic_index_map",
                              &SemanticScene::getSemanticIndexMap)
       .def("semantic_index_to_object_index",
-           &SemanticScene::semanticIndexToObjectIndex);
-
-  // ==== ObjectControls ====
-  py::class_<ObjectControls, ObjectControls::ptr>(m, "ObjectControls")
-      .def(py::init(&ObjectControls::create<>))
-      .def("action", &ObjectControls::action, R"(
-        Take action using this :py:class:`ObjectControls`.
-      )",
-           "object"_a, "name"_a, "amount"_a, "apply_filter"_a = true);
+           &SemanticScene::semanticIndexToObjectIndex)
+      .def("get_regions_for_point", &SemanticScene::getRegionsForPoint,
+           R"(Compute all SemanticRegions which contain the point and return a
+             list of indices for the regions in this SemanticScene.)",
+           "point"_a)
+      .def("get_weighted_regions_for_point",
+           &SemanticScene::getWeightedRegionsForPoint,
+           R"("Find all SemanticRegions which contain the point and return a
+              sorted list of tuple pairs of the region index and a score of that
+              region, derived as 1 - (region_area/ttl_region_area) where ttl_region_area is the area of all the regions containing
+              the point, so that smaller regions are weighted higher. If only
+              one region contains the passed point, its weight will be 1.)",
+           "point"_a)
+      .def("get_regions_for_points", &SemanticScene::getRegionsForPoints,
+           R"("Compute SemanticRegion containment for a set of points. Return a
+              sorted list of tuple pairs with each containing region index and
+              the percentage of points contained by that region. In the case of nested
+              regions, points are considered belonging to every region the point is
+              found in.)",
+           "points"_a);
 }
 
 }  // namespace scene

@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -9,8 +9,8 @@
 #include "esp/assets/BaseMesh.h"
 #include "esp/assets/GenericSemanticMeshData.h"
 #include "esp/core/Esp.h"
-#include "esp/geo/VoxelWrapper.h"
-#include "esp/metadata/attributes/AttributesBase.h"
+#include "esp/metadata/attributes/AbstractAttributes.h"
+#include "esp/metadata/attributes/AbstractObjectAttributes.h"
 #include "esp/physics/PhysicsObjectBase.h"
 
 /** @file
@@ -21,11 +21,6 @@ namespace esp {
 namespace assets {
 class ResourceManager;
 }
-namespace metadata {
-namespace attributes {
-class AbstractObjectAttributes;
-}  // namespace attributes
-}  // namespace metadata
 
 namespace physics {
 
@@ -61,7 +56,8 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
    * @return true if initialized successfully, false otherwise.
    */
   virtual bool initialize(
-      metadata::attributes::AbstractObjectAttributes::ptr initAttributes) = 0;
+      std::shared_ptr<metadata::attributes::AbstractObjectAttributes>
+          initAttributes) = 0;
 
   /**
    * @brief Finalize the creation of @ref RigidObject or @ref
@@ -103,7 +99,10 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
    * coordinate system relative to the object's center of mass.
    */
   virtual void applyForce(CORRADE_UNUSED const Magnum::Vector3& force,
-                          CORRADE_UNUSED const Magnum::Vector3& relPos) {}
+                          CORRADE_UNUSED const Magnum::Vector3& relPos) {
+    ESP_ERROR()
+        << "Not implemented. Install with --bullet to use this feature.";
+  }
 
   /**
    * @brief Apply an impulse to an object through a dervied dynamics
@@ -117,7 +116,10 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
    * coordinate system relative to the object's center of mass.
    */
   virtual void applyImpulse(CORRADE_UNUSED const Magnum::Vector3& impulse,
-                            CORRADE_UNUSED const Magnum::Vector3& relPos) {}
+                            CORRADE_UNUSED const Magnum::Vector3& relPos) {
+    ESP_ERROR()
+        << "Not implemented. Install with --bullet to use this feature.";
+  }
 
   /**
    * @brief Apply an internal torque to an object through a dervied dynamics
@@ -126,7 +128,10 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
    * @param torque The desired torque on the object in the local coordinate
    * system.
    */
-  virtual void applyTorque(CORRADE_UNUSED const Magnum::Vector3& torque) {}
+  virtual void applyTorque(CORRADE_UNUSED const Magnum::Vector3& torque) {
+    ESP_ERROR()
+        << "Not implemented. Install with --bullet to use this feature.";
+  }
   /**
    * @brief Apply an internal impulse torque to an object through a dervied
    * dynamics implementation. Does nothing for @ref
@@ -137,7 +142,10 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
    * requiring integration through simulation.
    */
   virtual void applyImpulseTorque(
-      CORRADE_UNUSED const Magnum::Vector3& impulse) {}
+      CORRADE_UNUSED const Magnum::Vector3& impulse) {
+    ESP_ERROR()
+        << "Not implemented. Install with --bullet to use this feature.";
+  }
 
   // ==== Getter/Setter functions ===
 
@@ -206,6 +214,38 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
   virtual void setFrictionCoefficient(
       CORRADE_UNUSED const double frictionCoefficient) {}
 
+  /** @brief Get the scalar rolling friction coefficient of the object. Only
+   * used for dervied dynamic implementations of @ref RigidObject.
+   * @return The scalar rolling friction coefficient of the object. Damps
+   * angular velocity about axis orthogonal to the contact normal to prevent
+   * rounded shapes from rolling forever.
+   */
+  virtual double getRollingFrictionCoefficient() const { return 0.0; }
+
+  /** @brief Set the scalar rolling friction coefficient of the object. Only
+   * used for dervied dynamic implementations of @ref RigidObject.
+   * @param rollingFrictionCoefficient The new scalar rolling friction
+   * coefficient of the object. Damps angular velocity about axis orthogonal to
+   * the contact normal to prevent rounded shapes from rolling forever.
+   */
+  virtual void setRollingFrictionCoefficient(
+      CORRADE_UNUSED const double rollingFrictionCoefficient) {}
+
+  /** @brief Get the scalar spinning friction coefficient of the object. Only
+   * used for dervied dynamic implementations of @ref RigidObject.
+   * @return The scalar spinning friction coefficient of the object. Damps
+   * angular velocity about the contact normal.
+   */
+  virtual double getSpinningFrictionCoefficient() const { return 0.0; }
+
+  /** @brief Set the scalar spinning friction coefficient of the object. Only
+   * used for dervied dynamic implementations of @ref RigidObject.
+   * @param spinningFrictionCoefficient The new scalar friction coefficient of
+   * the object. Damps angular velocity about the contact normal.
+   */
+  virtual void setSpinningFrictionCoefficient(
+      CORRADE_UNUSED const double spinningFrictionCoefficient) {}
+
   /** @brief Get the 3x3 inertia matrix for an object.
    * @return The object's 3x3 inertia matrix.
    * @todo provide a setter for the full 3x3 inertia matrix. Not all
@@ -238,13 +278,25 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
   /**
    * @brief Returns the @ref metadata::attributes::SceneObjectInstanceAttributes
    * used to place this rigid object in the scene.
-   * @return a read-only copy of the scene instance attributes used to place
+   * @return a read-only copy of the @ref metadata::attributes::SceneInstanceAttributes used to place
    * this object in the scene.
    */
   std::shared_ptr<const metadata::attributes::SceneObjectInstanceAttributes>
   getInitObjectInstanceAttr() const {
     return PhysicsObjectBase::getInitObjectInstanceAttrInternal<
-        const metadata::attributes::SceneObjectInstanceAttributes>();
+        metadata::attributes::SceneObjectInstanceAttributes>();
+  }
+
+  /**
+   * @brief Returns a mutable copy of the @ref metadata::attributes::SceneObjectInstanceAttributes
+   * used to place this rigid object in the scene.
+   * @return a read-only copy of the @ref metadata::attributes::SceneInstanceAttributes used to place
+   * this object in the scene.
+   */
+  std::shared_ptr<metadata::attributes::SceneObjectInstanceAttributes>
+  getInitObjectInstanceAttrCopy() const {
+    return PhysicsObjectBase::getInitObjectInstanceAttrCopyInternal<
+        metadata::attributes::SceneObjectInstanceAttributes>();
   }
 
   /**
@@ -260,19 +312,6 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
     // fields updated based on current state
     return PhysicsObjectBase::getCurrentObjectInstanceAttrInternal<
         metadata::attributes::SceneObjectInstanceAttributes>();
-  }
-
-  /** @brief Get a copy of the template used to initialize this object
-   * or scene.
-   * @return A copy of the initialization template used to create this object
-   * instance or nullptr if no template exists.
-   */
-  template <class T>
-  std::shared_ptr<T> getInitializationAttributes() const {
-    if (!initializationAttributes_) {
-      return nullptr;
-    }
-    return T::create(*(static_cast<T*>(initializationAttributes_.get())));
   }
 
   /** @brief Get the scalar linear damping coefficient of the object. Only used
@@ -334,13 +373,6 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
   virtual void setRestitutionCoefficient(
       CORRADE_UNUSED const double restitutionCoefficient) {}
 
-  /** @brief Get the scale of the object set during initialization.
-   * @return The scaling for the object relative to its initially loaded meshes.
-   */
-  virtual Magnum::Vector3 getScale() const {
-    return initializationAttributes_->getScale();
-  }
-
   /**
    * @brief Get the semantic ID for this object.
    */
@@ -365,46 +397,6 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
     return visualNodes_;
   }
 
-  /** @brief Get the VoxelWrapper for the object.
-   * @return The voxel wrapper for the object.
-   */
-  std::shared_ptr<esp::geo::VoxelWrapper> getVoxelization() const {
-    return voxelWrapper;
-  }
-
-#ifdef ESP_BUILD_WITH_VHACD
-
-  /** @brief Initializes a new VoxelWrapper with a specified resolution. Creates
-   * a boundary voxelization (registered under the key "Boundary" in the
-   * VoxelGrid) using VHACD.
-   * @param resourceManager_ A reference to the current resource manager, used
-   * for registering the newly created voxel grid within the resource manager's
-   * VoxelGrid dictionary.
-   * @param resolution Represents the approximate number of voxels in the new
-   * voxelization.
-   */
-  void generateVoxelization(esp::assets::ResourceManager& resourceManager_,
-                            int resolution = 1000000) {
-    std::string renderAssetHandle =
-        initializationAttributes_->getRenderAssetHandle();
-    voxelWrapper =
-        std::make_shared<esp::geo::VoxelWrapper>(esp::geo::VoxelWrapper(
-            renderAssetHandle, &node(), resourceManager_, resolution));
-  }
-#endif
-
-  /**
-   * @brief The @ref SceneNode of a bounding box debug drawable. If nullptr, BB
-   * drawing is off. See @ref setObjectBBDraw().
-   */
-  scene::SceneNode* BBNode_ = nullptr;
-
-  /**
-   * @brief  The @ref SceneNode of the voxel drawable. If nullptr, Voxel drawing
-   * is off. See @ref setObjectVoxelizationDraw().
-   */
-  scene::SceneNode* VoxelNode_ = nullptr;
-
   /**
    * @brief All Drawable components are children of this node.
    *
@@ -418,11 +410,6 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
    * SceneGraph
    */
   std::vector<esp::scene::SceneNode*> visualNodes_;
-
-  /**
-   * @brief ptr to the VoxelWrapper associated with this RigidBase
-   */
-  std::shared_ptr<esp::geo::VoxelWrapper> voxelWrapper = nullptr;
 
  protected:
   /**
@@ -441,20 +428,12 @@ class RigidBase : public esp::physics::PhysicsObjectBase {
    * @brief Shift the object's local origin to be coincident with the center of
    * it's bounding box, @ref cumulativeBB_. See @ref shiftOrigin.
    */
-  void shiftOriginToBBCenter() {
-    shiftOrigin(-node().getCumulativeBB().center());
-  }
+  void shiftOriginToBBCenter() { shiftOrigin(-getAabb().center()); }
 
   /** @brief Flag sepcifying whether or not the object has an active collision
    * shape.
    */
   bool isCollidable_ = false;
-
-  /**
-   * @brief Saved attributes when the object was initialized.
-   */
-  metadata::attributes::AbstractObjectAttributes::ptr
-      initializationAttributes_ = nullptr;
 
  public:
   ESP_SMART_POINTERS(RigidBase)

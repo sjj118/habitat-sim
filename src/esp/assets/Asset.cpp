@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -12,16 +12,13 @@ namespace assets {
 
 AssetInfo AssetInfo::fromPath(const std::string& path) {
   using Corrade::Utility::String::endsWith;
-  AssetInfo info{AssetType::UNKNOWN, path};
+  AssetInfo info{metadata::attributes::AssetType::Unknown, path};
 
   if (endsWith(path, "_semantic.ply")) {
-    info.type = AssetType::INSTANCE_MESH;
-  } else if (endsWith(path, "mesh.ply")) {
-    info.type = AssetType::FRL_PTEX_MESH;
-    info.frame = geo::CoordinateFrame(geo::ESP_BACK, geo::ESP_UP);
+    info.type = metadata::attributes::AssetType::InstanceMesh;
   } else if (endsWith(path, ".glb")) {
     // assumes MP3D glb with gravity = -Z
-    info.type = AssetType::MP3D_MESH;
+    info.type = metadata::attributes::AssetType::Mp3dMesh;
     // Create a coordinate for the mesh by rotating the default ESP
     // coordinate frame to -Z gravity
     info.frame = geo::CoordinateFrame(geo::ESP_BACK, geo::ESP_UP);

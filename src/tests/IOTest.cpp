@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -11,22 +11,25 @@
 #include "esp/io/Io.h"
 #include "esp/io/Json.h"
 #include "esp/io/JsonAllTypes.h"
-#include "esp/io/URDFParser.h"
+#include "esp/metadata/URDFParser.h"
+#include "esp/metadata/attributes/ArticulatedObjectAttributes.h"
 #include "esp/metadata/attributes/ObjectAttributes.h"
 
 #include "configure.h"
 
 namespace Cr = Corrade;
 
-using esp::metadata::attributes::AbstractObjectAttributes;
+using esp::metadata::attributes::ArticulatedObjectAttributes;
+using esp::metadata::attributes::AssetType;
 using esp::metadata::attributes::ObjectAttributes;
-
 namespace {
 const std::string dataDir = Corrade::Utility::Path::join(SCENE_DATASETS, "../");
 
 struct IOTest : Cr::TestSuite::Tester {
   explicit IOTest();
   void fileReplaceExtTest();
+  void absToRelativePathConverison();
+  void testEllipsisFilter();
   void parseURDF();
   void testJson();
   void testJsonBuiltinTypes();
@@ -50,7 +53,8 @@ struct IOTest : Cr::TestSuite::Tester {
 };
 
 IOTest::IOTest() {
-  addTests({&IOTest::fileReplaceExtTest, &IOTest::parseURDF, &IOTest::testJson,
+  addTests({&IOTest::fileReplaceExtTest, &IOTest::absToRelativePathConverison,
+            &IOTest::testEllipsisFilter, &IOTest::parseURDF, &IOTest::testJson,
             &IOTest::testJsonBuiltinTypes, &IOTest::testJsonStlTypes,
             &IOTest::testJsonMagnumTypes, &IOTest::testJsonEspTypes,
             &IOTest::testJsonUserType});
@@ -98,15 +102,105 @@ void IOTest::fileReplaceExtTest() {
   CORRADE_COMPARE(result, ".jpg.png");
 }
 
+void IOTest::testEllipsisFilter() {
+  std::string testPath1 = "/test/path/to/test/no-op.txt";
+  std::string res = esp::io::normalizePath(testPath1);
+  CORRADE_COMPARE(res, "/test/path/to/test/no-op.txt");
+
+  testPath1 = "/test/path/DELETE/../to/test/removal.txt";
+  res = esp::io::normalizePath(testPath1);
+  CORRADE_COMPARE(res, "/test/path/to/test/removal.txt");
+
+  testPath1 =
+      "/test/path/DELETE/../to/DELETE/../test/DELETE/../multiple/removal.txt";
+  res = esp::io::normalizePath(testPath1);
+  CORRADE_COMPARE(res, "/test/path/to/test/multiple/removal.txt");
+
+  testPath1 = "test/path/DELETE/../to/test/removal.txt";
+  res = esp::io::normalizePath(testPath1);
+  CORRADE_COMPARE(res, "test/path/to/test/removal.txt");
+
+  testPath1 =
+      "test/path/DELETE/../to/DELETE/../test/DELETE/../multiple/removal.txt";
+  res = esp::io::normalizePath(testPath1);
+  CORRADE_COMPARE(res, "test/path/to/test/multiple/removal.txt");
+
+  testPath1 =
+      "/test/path/DELETE/DELETE2/DELETE3/../../../to/DELETE/DELETE2/../../test/"
+      "DELETE/../consecutive/removal.txt";
+  res = esp::io::normalizePath(testPath1);
+  CORRADE_COMPARE(res, "/test/path/to/test/consecutive/removal.txt");
+
+  // ignore intitial ellipsis
+  testPath1 = "/../test/path/DELETE/../to/test/initial/ignore.txt";
+  res = esp::io::normalizePath(testPath1);
+  CORRADE_COMPARE(res, "/../test/path/DELETE/../to/test/initial/ignore.txt");
+
+}  // IOTest::testEllipsisFilter
+
+void IOTest::absToRelativePathConverison() {
+  // Test conversion of an absolute path to a path relative to another path.
+  // Path to be relative to
+  std::string absPathTarget = "/aa/bb/cc/dd/ee/ff/gg/";
+
+  // Filepath to convert
+  std::string absPathToConvert = "/aa/bb/cc/dd/xx/yy/zz/test.txt";
+  // Result of conversion
+  std::string relPathToBaseTarget =
+      esp::io::getPathRelativeToAbsPath(absPathToConvert, absPathTarget);
+
+  CORRADE_COMPARE(relPathToBaseTarget, "../../../xx/yy/zz/test.txt");
+
+  absPathToConvert = "/aa/bb/cc/../dd/xx/yy/zz/test.txt";
+  relPathToBaseTarget =
+      esp::io::getPathRelativeToAbsPath(absPathToConvert, absPathTarget);
+
+  CORRADE_COMPARE(relPathToBaseTarget, "../../../../../dd/xx/yy/zz/test.txt");
+
+  absPathToConvert = "/aa/bb/cc/dd/ee/ff/gg/test.xyz";
+  relPathToBaseTarget =
+      esp::io::getPathRelativeToAbsPath(absPathToConvert, absPathTarget);
+
+  CORRADE_COMPARE(relPathToBaseTarget, "test.xyz");
+
+  // Test conversion of an absolute path to a path relative to another path.
+  // Path to be relative to
+  absPathTarget = "aa/bb/cc/dd/ee/ff/gg/";
+
+  // Path to convert
+  absPathToConvert = "/aa/bb/cc/dd/xx/yy/zz/test.txt";
+  // Result of conversion
+  relPathToBaseTarget =
+      esp::io::getPathRelativeToAbsPath(absPathToConvert, absPathTarget);
+
+  CORRADE_COMPARE(relPathToBaseTarget, "../../../xx/yy/zz/test.txt");
+
+  absPathToConvert = "/aa/bb/cc/../dd/xx/yy/zz/test.txt";
+  relPathToBaseTarget =
+      esp::io::getPathRelativeToAbsPath(absPathToConvert, absPathTarget);
+
+  CORRADE_COMPARE(relPathToBaseTarget, "../../../../../dd/xx/yy/zz/test.txt");
+
+  absPathToConvert = "/aa/bb/cc/dd/ee/ff/gg/test.xyz";
+  relPathToBaseTarget =
+      esp::io::getPathRelativeToAbsPath(absPathToConvert, absPathTarget);
+
+  CORRADE_COMPARE(relPathToBaseTarget, "test.xyz");
+
+}  // IOTest::absToRelativePathConverison
+
 void IOTest::parseURDF() {
   const std::string iiwaURDF = Cr::Utility::Path::join(
       TEST_ASSETS, "urdf/kuka_iiwa/model_free_base.urdf");
 
-  esp::io::URDF::Parser parser;
+  ArticulatedObjectAttributes::ptr attributes =
+      ArticulatedObjectAttributes::create(iiwaURDF);
+
+  esp::metadata::URDF::Parser parser;
 
   // load the iiwa test asset
-  std::shared_ptr<esp::io::URDF::Model> urdfModel;
-  parser.parseURDF(urdfModel, iiwaURDF);
+  std::shared_ptr<esp::metadata::URDF::Model> urdfModel;
+  parser.parseURDF(attributes->getURDFPath(), urdfModel);
   ESP_DEBUG() << "name:" << urdfModel->m_name;
   CORRADE_COMPARE(urdfModel->m_name, "lbr_iiwa");
   ESP_DEBUG() << "file:" << urdfModel->m_sourceFile;
@@ -142,7 +236,7 @@ void IOTest::parseURDF() {
   CORRADE_COMPARE(urdfModel->getLink(1)->m_inertia.m_mass, 12.0);
 
   // test overwrite re-load
-  parser.parseURDF(urdfModel, iiwaURDF);
+  parser.parseURDF(attributes->getURDFPath(), urdfModel);
   // should have default values again
   CORRADE_COMPARE(urdfModel->getGlobalScaling(), 1.0);
   CORRADE_COMPARE(urdfModel->getMassScaling(), 1.0);
@@ -222,28 +316,22 @@ void IOTest::testJson() {
 // esp::io::addMember/esp::io::readMember and assert equality.
 void IOTest::testJsonBuiltinTypes() {
   rapidjson::Document d(rapidjson::kObjectType);
-  rapidjson::Document::AllocatorType& allocator = d.GetAllocator();
+  // specify this as the test
+  CORRADE_VERIFY(true);
 
-  int x0{std::numeric_limits<int>::lowest()};
-  _testJsonReadWrite(x0, "myint", d);
+  _testJsonReadWrite(std::numeric_limits<int>::lowest(), "myint", d);
 
-  unsigned x1{std::numeric_limits<unsigned>::max()};
-  _testJsonReadWrite(x1, "myunsigned", d);
+  _testJsonReadWrite(std::numeric_limits<unsigned>::max(), "myunsigned", d);
 
-  int64_t x2{std::numeric_limits<int64_t>::lowest()};
-  _testJsonReadWrite(x2, "myint64_t", d);
+  _testJsonReadWrite(std::numeric_limits<int64_t>::lowest(), "myint64_t", d);
 
-  uint64_t x3{std::numeric_limits<uint64_t>::max()};
-  _testJsonReadWrite(x3, "myuint64_t", d);
+  _testJsonReadWrite(std::numeric_limits<uint64_t>::max(), "myuint64_t", d);
 
-  float x4{1.0 / 7};
-  _testJsonReadWrite(x4, "myfloat", d);
+  _testJsonReadWrite(1.0f / 7.0f, "myfloat", d);
 
-  double x5{1.0 / 13};
-  _testJsonReadWrite(x5, "mydouble", d);
+  _testJsonReadWrite(double{1.0 / 13}, "mydouble", d);
 
-  bool xb{true};
-  _testJsonReadWrite(xb, "mybool", d);
+  _testJsonReadWrite(bool{true}, "mybool", d);
 
   // verify failure to read bool into int
   int x_err{0};
@@ -270,12 +358,10 @@ void IOTest::testJsonStlTypes() {
   CORRADE_COMPARE(pair2, pair);
 
   // test a vector of ints
-  std::vector<int> vec{3, 4, 5, 6};
-  _testJsonReadWrite(vec, "vec", d);
+  _testJsonReadWrite(std::vector<int>{3, 4, 5, 6}, "vec", d);
 
   // test an empty vector
-  std::vector<float> emptyVec{};
-  _testJsonReadWrite(emptyVec, "emptyVec", d);
+  _testJsonReadWrite(std::vector<float>{}, "emptyVec", d);
 
   // test reading a vector of wrong type
   std::vector<std::string> vec3;
@@ -288,15 +374,15 @@ void IOTest::testJsonStlTypes() {
 void IOTest::testJsonMagnumTypes() {
   rapidjson::Document d(rapidjson::kObjectType);
   rapidjson::Document::AllocatorType& allocator = d.GetAllocator();
+  // specify this as the test
+  CORRADE_VERIFY(true);
 
-  Magnum::Vector3 vec{1, 2, 3};
-  _testJsonReadWrite(vec, "myvec", d);
+  _testJsonReadWrite(Magnum::Vector3{1, 2, 3}, "myvec", d);
 
-  Magnum::Quaternion quat{{1, 2, 3}, 4};
-  _testJsonReadWrite(quat, "myquat", d);
+  _testJsonReadWrite(Magnum::Quaternion{{1, 2, 3}, 4}, "myquat", d);
 
-  Magnum::Matrix3 mat{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}};
-  _testJsonReadWrite(mat, "mymat", d);
+  _testJsonReadWrite(Magnum::Matrix3{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}, "mymat",
+                     d);
 
   // test reading the wrong type (wrong number of fields)
   Magnum::Quaternion quat3;
@@ -317,11 +403,12 @@ void IOTest::testJsonMagnumTypes() {
 void IOTest::testJsonEspTypes() {
   rapidjson::Document d(rapidjson::kObjectType);
   rapidjson::Document::AllocatorType& allocator = d.GetAllocator();
+  // specify this as the test
+  CORRADE_VERIFY(true);
 
   {
     // vec3f
-    esp::vec3f vec{1, 2, 3};
-    _testJsonReadWrite(vec, "myvec3f", d);
+    _testJsonReadWrite(esp::vec3f{1, 2, 3}, "myvec3f", d);
 
     // test reading the wrong type (wrong number of fields)
     std::vector<float> wrongNumFieldsVec{1, 3, 4, 4};
@@ -353,7 +440,7 @@ void IOTest::testJsonEspTypes() {
   {
     // AssetInfo
     esp::assets::AssetInfo assetInfo{
-        esp::assets::AssetType::MP3D_MESH,
+        AssetType::Mp3dMesh,
         "test_filepath2",
         esp::geo::CoordinateFrame(esp::vec3f(1.f, 0.f, 0.f),
                                   esp::vec3f(0.f, 0.f, 1.f),
@@ -364,6 +451,7 @@ void IOTest::testJsonEspTypes() {
     esp::io::addMember(d, "assetInfo", assetInfo, allocator);
     esp::assets::AssetInfo assetInfo2;
     CORRADE_VERIFY(esp::io::readMember(d, "assetInfo", assetInfo2));
+
     CORRADE_VERIFY(assetInfo2.type == assetInfo.type);
     CORRADE_COMPARE(assetInfo2.filepath, assetInfo.filepath);
     CORRADE_VERIFY(assetInfo2.frame.up().isApprox(assetInfo.frame.up()));
@@ -402,7 +490,7 @@ void IOTest::testJsonEspTypes() {
         {Magnum::Vector3(1.f, 2.f, 3.f),
          Magnum::Quaternion::rotation(Magnum::Rad{1.f},
                                       Magnum::Vector3(0.f, 1.f, 0.f))},
-        4};
+    };
     esp::io::addMember(d, "state", state, allocator);
     // read and compare RenderAssetInstanceState
     esp::gfx::replay::RenderAssetInstanceState state2;

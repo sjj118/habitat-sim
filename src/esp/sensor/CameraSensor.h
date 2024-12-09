@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -14,10 +14,14 @@ namespace sensor {
 
 struct CameraSensorSpec : public VisualSensorSpec {
   float orthoScale = 0.1f;
+  /**
+   * @brief Horizontal FOV.
+   */
   Mn::Deg hfov = 90.0_degf;
   CameraSensorSpec();
   void sanityCheck() const override;
   bool operator==(const CameraSensorSpec& a) const;
+  Magnum::Matrix4 projectionMatrix() const;
   ESP_SMART_POINTERS(CameraSensorSpec)
 };
 
@@ -86,10 +90,9 @@ class CameraSensor : public VisualSensor {
   void setFOV(Mn::Deg FOV) {
     hfov_ = FOV;
     if (cameraSensorSpec_->sensorSubType != SensorSubType::Pinhole) {
-      ESP_DEBUG()
-          << "Only Perspective-base CameraSensors use "
-             "FOV. Specified value saved but will not be consumed by this "
-             "CameraSensor.";
+      ESP_DEBUG() << "Only Perspective-based CameraSensors use "
+                     "FOV. Specified value will be saved but will not be "
+                     "consumed by this CameraSensor.";
     }
     recomputeBaseProjectionMatrix();
   }  // CameraSensor::setFOV
@@ -102,8 +105,7 @@ class CameraSensor : public VisualSensor {
     CORRADE_ASSERT(_cameraType == SensorSubType::Pinhole ||
                        _cameraType == SensorSubType::Orthographic,
                    "CameraSensor::setCameraType(): _cameraType is not "
-                   "SensorSubType "
-                   "Pinhole or Orthographic", );
+                   "SensorSubType Pinhole or Orthographic", );
     cameraSensorSpec_->sensorSubType = _cameraType;
     recomputeBaseProjectionMatrix();
   }  // CameraSensor::setCameraType
@@ -164,6 +166,11 @@ class CameraSensor : public VisualSensor {
    */
   CameraSensorSpec::ptr specification() const { return cameraSensorSpec_; }
 
+  /**
+   * @brief Return this sensor's projection matrix
+   */
+  Mn::Matrix4 getProjectionMatrix() const override { return projectionMatrix_; }
+
  protected:
   /**
    * @brief Recalculate the base projection matrix, based on camera type and
@@ -187,8 +194,8 @@ class CameraSensor : public VisualSensor {
   void draw(scene::SceneGraph& sceneGraph, gfx::RenderCamera::Flags flags);
 
   /**
-   * @brief This camera's projection matrix. Should be recomputeulated every
-   * time size changes.
+   * @brief This camera's projection matrix. Should be recomputed every time
+   * size changes.
    */
   Magnum::Matrix4 projectionMatrix_;
 

@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Meta Platforms, Inc. and its affiliates.
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "../ArticulatedObject.h"
-#include "BulletBase.h"
 #include "BulletDynamics/Featherstone/btMultiBodyJointMotor.h"
 #include "BulletDynamics/Featherstone/btMultiBodySphericalJointMotor.h"
 #include "BulletURDFImporter.h"
@@ -23,39 +22,6 @@ namespace physics {
 
 // forward declaration from BulletURDFImporter
 struct JointLimitConstraintInfo;
-
-////////////////////////////////////
-// Link
-////////////////////////////////////
-
-class BulletArticulatedLink : public ArticulatedLink, public BulletBase {
- public:
-  BulletArticulatedLink(scene::SceneNode* bodyNode,
-                        const assets::ResourceManager& resMgr,
-                        std::shared_ptr<btMultiBodyDynamicsWorld> bWorld,
-                        int index,
-                        std::shared_ptr<std::map<const btCollisionObject*, int>>
-                            collisionObjToObjIds)
-      : ArticulatedLink(bodyNode, index, resMgr),
-        BulletBase(std::move(bWorld), std::move(collisionObjToObjIds)) {}
-
-  Magnum::Range3D getCollisionShapeAabb() const override {
-    // TODO: collision object should be linked here
-    ESP_WARNING() << "Not implemented.";
-    return Magnum::Range3D();
-  }
-
-  //! link can't do this.
-  void setMotionType(CORRADE_UNUSED MotionType mt) override {
-    ESP_WARNING() << "Cannot set MotionType individually for links.";
-  }
-
- protected:
-  int mbIndex_;
-
- private:
-  ESP_SMART_POINTERS(BulletArticulatedLink)
-};
 
 ////////////////////////////////////
 // Articulated Object
@@ -82,24 +48,26 @@ class BulletArticulatedObject : public ArticulatedObject {
    * @brief Initialize this ArticulatedObject from a parsed URDF stored in a
    * URDFImporter. Creates a btMultiBody.
    *
+   * @param initAttributes The ArticulatedObjectAttributes used to build this
+   * ArticulatedObject.
    * @param u2b The BulletURDFImporter which will initialize this object from a
    * parsed URDF file.
    * @param worldTransform Desired global root state of the ArticulatedObject.
-   * @param drawables DrawableGroup to which this object's visual shapes will be
-   * added.
    * @param physicsNode The parent node of this object.
-   * @param fixedBase Whether or not the root link should be fixed or free.
    */
-  void initializeFromURDF(URDFImporter& u2b,
-                          const Magnum::Matrix4& worldTransform,
-                          scene::SceneNode* physicsNode) override;
+  void initializeFromURDF(
+      const std::shared_ptr<metadata::attributes::ArticulatedObjectAttributes>&
+          initAttributes,
+      URDFImporter& u2b,
+      const Magnum::Matrix4& worldTransform,
+      scene::SceneNode* physicsNode) override;
 
   /**
-   * @brief Cosntruct a Static btRigidObject to act as a proxy collision object
+   * @brief Construct a Static btRigidObject to act as a proxy collision object
    * for the fixed base.
    *
    * This optimization reduces the collision island size for articulated objects
-   * with heavy branching (e.g. a counter with many drawers) resuling in better
+   * with heavy branching (e.g. a counter with many drawers) resulting in better
    * sleeping behavior (e.g. contact with the countertop should not activate all
    * drawers and contained objects).
    *
@@ -371,7 +339,7 @@ class BulletArticulatedObject : public ArticulatedObject {
   /**
    * @brief Create a new JointMotor from a JointMotorSettings.
    *
-   * Note: No base implementation. See @ref bullet::BulletArticulatedObject.
+   * Note: No base implementation. See @ref BulletArticulatedObject.
    * @param linkIndex the index of the link for which the parent joint will have
    * a motor attached
    * @param settings The settings for the joint motor. Must have JointMotorType
@@ -396,7 +364,7 @@ class BulletArticulatedObject : public ArticulatedObject {
    * @brief Create a new set of default JointMotors for all valid dofs in an
    * ArticulatedObject.
    *
-   * Note: No base implementation. See @ref bullet::BulletArticulatedObject.
+   * Note: No base implementation. See @ref BulletArticulatedObject.
    *
    * @return A map of motorIds to link/joint indices for the new motors.
    */
@@ -409,10 +377,10 @@ class BulletArticulatedObject : public ArticulatedObject {
    *
    * By default, state is interpreted as position targets unless `velocities` is
    * specified. Expected input is the full length position or velocity array for
-   * this object. This function will safely skip states for jointa which don't
+   * this object. This function will safely skip states for joints which don't
    * support JointMotors.
    *
-   * Note: No base implementation. See @ref bullet::BulletArticulatedObject.
+   * Note: No base implementation. See @ref BulletArticulatedObject.
    *
    * @param stateTargets Full length joint position or velocity array for this
    * object.
@@ -447,6 +415,10 @@ class BulletArticulatedObject : public ArticulatedObject {
   //! broadphase aabbs for the object. Do this with manual state setters.
   void updateKinematicState();
 
+  //! Instantly set activation state of the base and link collision objects,
+  //! otherwise deferred to simulation time
+  void setCollisionObjectsActivateState(bool activate) const;
+
   int nextJointMotorId_ = 0;
 
   std::unordered_map<int, std::unique_ptr<btMultiBodyJointMotor>>
@@ -455,9 +427,9 @@ class BulletArticulatedObject : public ArticulatedObject {
       articulatedSphericalJointMotors;
 
   //! maps local link id to parent joint's limit constraint
-  std::unordered_map<int, JointLimitConstraintInfo> jointLimitConstraints;
+  std::unordered_map<int, JointLimitConstraintInfo> jointLimitConstraints_;
 
-  // scratch datastrcutures for updateKinematicState
+  // scratch data structures for updateKinematicState
   btAlignedObjectArray<btQuaternion> scratch_q_;
   btAlignedObjectArray<btVector3> scratch_m_;
 

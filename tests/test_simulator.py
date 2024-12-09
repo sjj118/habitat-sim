@@ -1,3 +1,7 @@
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 import random
 from copy import copy
 from os import path as osp
@@ -6,8 +10,8 @@ import magnum as mn
 import numpy as np
 import pytest
 
-import examples.settings
 import habitat_sim
+import habitat_sim.utils.settings
 
 
 def is_same_state(initial_state, new_state) -> bool:
@@ -42,15 +46,15 @@ def test_no_navmesh_smoke():
 
 
 def test_empty_scene():
-    cfg_settings = examples.settings.default_sim_settings.copy()
+    cfg_settings = habitat_sim.utils.settings.default_sim_settings.copy()
 
     # keyword "NONE" initializes a scene with no scene mesh
     cfg_settings["scene"] = "NONE"
     # test that depth sensor doesn't mind an empty scene
     cfg_settings["depth_sensor"] = True
 
-    hab_cfg = examples.settings.make_cfg(cfg_settings)
-    hab_cfg_mm = examples.settings.make_cfg(cfg_settings)
+    hab_cfg = habitat_sim.utils.settings.make_cfg(cfg_settings)
+    hab_cfg_mm = habitat_sim.utils.settings.make_cfg(cfg_settings)
     mm = habitat_sim.metadata.MetadataMediator(hab_cfg.sim_cfg)
     hab_cfg_mm.metadata_mediator = mm
 
@@ -65,33 +69,101 @@ def test_empty_scene():
 
 
 def test_sim_reset(make_cfg_settings):
-    hab_cfg = examples.settings.make_cfg(make_cfg_settings)
-    hab_cfg_mm = examples.settings.make_cfg(make_cfg_settings)
+    hab_cfg = habitat_sim.utils.settings.make_cfg(make_cfg_settings)
+    hab_cfg_mm = habitat_sim.utils.settings.make_cfg(make_cfg_settings)
     mm = habitat_sim.metadata.MetadataMediator(hab_cfg.sim_cfg)
     hab_cfg_mm.metadata_mediator = mm
+
+    def check_isclose(val1, val2):
+        return np.isclose(val1, val2, rtol=1e-4).all()
 
     test_list = [hab_cfg, hab_cfg_mm]
     for ctor_arg in test_list:
         with habitat_sim.Simulator(ctor_arg) as sim:
             agent_config = sim.config.agents[0]
             sim.initialize_agent(0)
+            # cache agent initial state
             initial_state = sim.agents[0].initial_state
             # Take random steps in the environment
             for _ in range(10):
                 action = random.choice(list(agent_config.action_space.keys()))
                 sim.step(action)
 
+            # add rigid and articulated objects
+            sim.metadata_mediator.ao_template_manager.load_configs(
+                "data/test_assets/urdf/"
+            )
+            sim.metadata_mediator.object_template_manager.load_configs(
+                "data/test_assets/objects/"
+            )
+
+            chair_handle = (
+                sim.metadata_mediator.object_template_manager.get_template_handles(
+                    "chair"
+                )[0]
+            )
+            ao_handle = sim.metadata_mediator.ao_template_manager.get_template_handles(
+                "prism"
+            )[0]
+
+            ro = sim.get_rigid_object_manager().add_object_by_template_handle(
+                chair_handle
+            )
+            ao = sim.get_articulated_object_manager().add_articulated_object_by_template_handle(
+                ao_handle
+            )
+
+            assert ro is not None
+            assert ao is not None
+
+            # cache the initial state for verification
+            ao_initial_state = (
+                ao.transformation,
+                ao.joint_positions,
+                ao.joint_velocities,
+            )
+            ro_initial_state = ro.transformation
+
+            assert check_isclose(ro.transformation, ro_initial_state)
+            assert check_isclose(ao.transformation, ao_initial_state[0])
+            assert check_isclose(ao.joint_positions, ao_initial_state[1])
+            assert check_isclose(ao.joint_velocities, ao_initial_state[2])
+
+            ro.translation = mn.Vector3(1, 2, 3)
+            ro.rotation = mn.Quaternion.rotation(
+                mn.Rad(0.123), mn.Vector3(0.1, 0.2, 0.3).normalized()
+            )
+            ao.translation = mn.Vector3(3, 2, 1)
+            ao.rotation = mn.Quaternion.rotation(
+                mn.Rad(0.321), mn.Vector3(0.3, 0.2, 0.1).normalized()
+            )
+            ao.joint_positions = np.array(ao_initial_state[1]) * 0.2
+            ao.joint_velocities = np.ones(len(ao.joint_velocities))
+
+            assert not check_isclose(ro.transformation, ro_initial_state)
+            assert not check_isclose(ao.transformation, ao_initial_state[0])
+            assert not check_isclose(ao.joint_positions, ao_initial_state[1])
+            assert not check_isclose(ao.joint_velocities, ao_initial_state[2])
+
+            # do the reset
             sim.reset()
+
+            # validate agent state reset
             new_state = sim.agents[0].get_state()
-            same_position = all(initial_state.position == new_state.position)
-            same_rotation = np.isclose(
-                initial_state.rotation, new_state.rotation, rtol=1e-4
-            )  # Numerical error can cause slight deviations
-            assert same_position and same_rotation
+            # NOTE: Numerical error can cause slight deviations, use isclose
+            # assert same agent position and rotation
+            assert check_isclose(initial_state.position, new_state.position)
+            assert check_isclose(initial_state.rotation, new_state.rotation)
+
+            # validate object state resets
+            assert check_isclose(ro.transformation, ro_initial_state)
+            assert check_isclose(ao.transformation, ao_initial_state[0])
+            assert check_isclose(ao.joint_positions, ao_initial_state[1])
+            assert check_isclose(ao.joint_velocities, ao_initial_state[2])
 
 
 def test_sim_multiagent_move_and_reset(make_cfg_settings, num_agents=10):
-    hab_cfg = examples.settings.make_cfg(make_cfg_settings)
+    hab_cfg = habitat_sim.utils.settings.make_cfg(make_cfg_settings)
     for agent_id in range(1, num_agents):
         new_agent = copy(hab_cfg.agents[0])
         for sensor_spec in new_agent.sensor_specifications:
@@ -174,33 +246,28 @@ def test_multiple_construct_destroy():
 
 
 def test_scene_bounding_boxes():
-    cfg_settings = examples.settings.default_sim_settings.copy()
+    cfg_settings = habitat_sim.utils.settings.default_sim_settings.copy()
     cfg_settings["scene"] = "data/scene_datasets/habitat-test-scenes/van-gogh-room.glb"
-    hab_cfg = examples.settings.make_cfg(cfg_settings)
-    hab_cfg_mm = examples.settings.make_cfg(cfg_settings)
+    hab_cfg = habitat_sim.utils.settings.make_cfg(cfg_settings)
+    hab_cfg_mm = habitat_sim.utils.settings.make_cfg(cfg_settings)
     mm = habitat_sim.metadata.MetadataMediator(hab_cfg.sim_cfg)
     hab_cfg_mm.metadata_mediator = mm
 
     test_list = [hab_cfg, hab_cfg_mm]
     for ctor_arg in test_list:
         with habitat_sim.Simulator(ctor_arg) as sim:
-            scene_graph = sim.get_active_scene_graph()
-            root_node = scene_graph.get_root_node()
-            root_node.compute_cumulative_bb()
-            scene_bb = root_node.cumulative_bb
             ground_truth = mn.Range3D.from_size(
                 mn.Vector3(-0.775869, -0.0233012, -1.6706),
                 mn.Vector3(6.76937, 3.86304, 3.5359),
             )
-            assert ground_truth == scene_bb
+            assert ground_truth == sim.scene_aabb
 
 
 def test_object_template_editing():
-    cfg_settings = examples.settings.default_sim_settings.copy()
+    cfg_settings = habitat_sim.utils.settings.default_sim_settings.copy()
     cfg_settings["scene"] = "data/scene_datasets/habitat-test-scenes/van-gogh-room.glb"
-    cfg_settings["enable_physics"] = True
-    hab_cfg = examples.settings.make_cfg(cfg_settings)
-    hab_cfg_mm = examples.settings.make_cfg(cfg_settings)
+    hab_cfg = habitat_sim.utils.settings.make_cfg(cfg_settings)
+    hab_cfg_mm = habitat_sim.utils.settings.make_cfg(cfg_settings)
     mm = habitat_sim.metadata.MetadataMediator(hab_cfg.sim_cfg)
     hab_cfg_mm.metadata_mediator = mm
 
@@ -244,11 +311,13 @@ def test_object_template_editing():
 
             # test adding a new object
             obj = rigid_obj_mgr.add_object_by_template_id(template_ids[0])
-            assert obj.object_id != -1
+            assert obj.object_id != habitat_sim.stage_id
 
             # test getting initialization templates
+            # NOTE : After template is registered, the read-only 'render_asset_fullpath'
+            # field holds the fully qualified path
             stage_init_template = sim.get_stage_initialization_template()
-            assert stage_init_template.render_asset_handle == cfg_settings["scene"]
+            assert stage_init_template.render_asset_fullpath == cfg_settings["scene"]
 
             obj_init_template = obj.creation_attributes
             assert obj_init_template.render_asset_handle.endswith("sphere.glb")
