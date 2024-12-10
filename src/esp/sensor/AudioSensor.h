@@ -154,6 +154,8 @@ class AudioSensor : public Sensor {
   AudioSensorSpec::ptr audioSensorSpec_ =
       std::dynamic_pointer_cast<AudioSensorSpec>(spec_);
 
+  const std::string logHeader_ = "[Audio] ";
+
 #ifdef ESP_BUILD_WITH_AUDIO
   RLRA_Context context = nullptr;
 
@@ -162,8 +164,6 @@ class AudioSensor : public Sensor {
 
   bool audioMaterialsJsonSet_ = false;
   bool newInitialization_ = false;
-
-  const std::string logHeader_ = "[Audio] ";
 
   std::vector<std::vector<float>> impulseResponse_;
 
