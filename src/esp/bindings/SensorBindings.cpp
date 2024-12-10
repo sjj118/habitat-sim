@@ -299,12 +299,10 @@ void initSensorBindings(py::module& m) {
 
 #ifdef ESP_BUILD_WITH_AUDIO
   // ==== RLRAudioPropagation Configuration ====
-  py::class_<RLRA_ContextConfiguration>(
-      m, "RLRAudioPropagationConfiguration")
+  py::class_<RLRA_ContextConfiguration>(m, "RLRAudioPropagationConfiguration")
       .def(py::init<>())
-      .def_readwrite(
-          "sampleRate", &RLRA_ContextConfiguration::sampleRate,
-          R"(int | 44100 | Sample rate for the simulated audio)")
+      .def_readwrite("sampleRate", &RLRA_ContextConfiguration::sampleRate,
+                     R"(int | 44100 | Sample rate for the simulated audio)")
       .def_readwrite(
           "frequencyBands", &RLRA_ContextConfiguration::frequencyBands,
           R"(int | 4 | Number of frequency bands in the audio simulation)")
@@ -342,7 +340,8 @@ void initSensorBindings(py::module& m) {
           "sourceRayDepth", &RLRA_ContextConfiguration::sourceRayDepth,
           R"(int | 10 | Maximum number of bounces of each source ray emitted by the ray tracer)")
       .def_readwrite(
-          "maxDiffractionOrder", &RLRA_ContextConfiguration::maxDiffractionOrder,
+          "maxDiffractionOrder",
+          &RLRA_ContextConfiguration::maxDiffractionOrder,
           R"(int | 10 | The maximum number of edge diffraction events that can occur between a source and listener. This value cannot exceed 10 (compile-time limit))")
       .def_readwrite(
           "direct", &RLRA_ContextConfiguration::direct,
@@ -350,12 +349,10 @@ void initSensorBindings(py::module& m) {
       .def_readwrite(
           "indirect", &RLRA_ContextConfiguration::indirect,
           R"(bool | true | Enable contribution from the indirect rays)")
-      .def_readwrite(
-          "diffraction", &RLRA_ContextConfiguration::diffraction,
-          R"(bool | true | Enable diffraction for the simulation)")
-      .def_readwrite(
-          "transmission", &RLRA_ContextConfiguration::transmission,
-          R"(bool | false | Enable transmission of rays)")
+      .def_readwrite("diffraction", &RLRA_ContextConfiguration::diffraction,
+                     R"(bool | true | Enable diffraction for the simulation)")
+      .def_readwrite("transmission", &RLRA_ContextConfiguration::transmission,
+                     R"(bool | false | Enable transmission of rays)")
       .def_readwrite(
           "meshSimplification", &RLRA_ContextConfiguration::meshSimplification,
           R"(bool | false | Uses a series of mesh simplification operations to reduce the mesh complexity for ray tracing. Vertex welding is applied, followed by simplification using the edge collapse algorithm.)")
@@ -363,8 +360,7 @@ void initSensorBindings(py::module& m) {
           "temporalCoherence", &RLRA_ContextConfiguration::temporalCoherence,
           R"(bool | false | Turn on/off temporal smoothing of the impulse response. This uses the impulse response from the previous simulation time step as a starting point for the next time step. This reduces the number of rays required by about a factor of 10, resulting in faster simulations, but should not be used if the motion of sources/listeners is not continuous.)");
 
-  py::enum_<RLRA_ChannelLayoutType>(
-      m, "RLRAudioPropagationChannelLayoutType")
+  py::enum_<RLRA_ChannelLayoutType>(m, "RLRAudioPropagationChannelLayoutType")
       .value("Unknown", RLRA_ChannelLayoutType_Unknown,
              R"(Unknown channel layout type)")
       .value(
@@ -378,8 +374,7 @@ void initSensorBindings(py::module& m) {
           R"(Channel layout that encodes fully spherical spatial audio as a set of spherical harmonic basis function coefficients)");
 
   // ==== RLRAudioPropagation::ChannelLayout ====
-  py::class_<RLRA_ChannelLayout>(
-      m, "RLRAudioPropagationChannelLayout")
+  py::class_<RLRA_ChannelLayout>(m, "RLRAudioPropagationChannelLayout")
       .def(py::init<>())
       .def_readwrite(
           "type", &RLRA_ChannelLayout::type,
@@ -409,9 +404,8 @@ void initSensorBindings(py::module& m) {
       .def_readwrite(
           "channelLayout", &AudioSensorSpec::channelLayout_,
           R"(RLRAudioPropagationChannelLayout | Defined in the relevant section | Channel layout for simulated output audio)")
-      .def_readwrite(
-          "enableMaterials", &AudioSensorSpec::enableMaterials_,
-          R"(bool | true | Enable audio materials)");
+      .def_readwrite("enableMaterials", &AudioSensorSpec::enableMaterials_,
+                     R"(bool | true | Enable audio materials)");
 #else
   py::class_<AudioSensorSpec, AudioSensorSpec::ptr, SensorSpec>(
       m, "AudioSensorSpec", py::dynamic_attr())

@@ -2468,7 +2468,8 @@ void Viewer::runAudioSimulation() {
   esp::sensor::AudioSensor& audioSensor = getAgentAudioSensor();
   const Mn::Vector3& sensorPos = audioSensor.specification()->position;
   Mn::Matrix4 T = agentBodyNode_->MagnumObject::transformationMatrix();
-  Mn::Vector3 pos = T.transformPoint({sensorPos[0], sensorPos[1], sensorPos[2]});
+  Mn::Vector3 pos =
+      T.transformPoint({sensorPos[0], sensorPos[1], sensorPos[2]});
   auto rotScalar = agentBodyNode_->rotation().scalar();
   auto rotVec = agentBodyNode_->rotation().vector();
 
