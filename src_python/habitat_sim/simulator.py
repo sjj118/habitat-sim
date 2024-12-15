@@ -763,7 +763,7 @@ class Sensor:
 
     def _get_audio_observation(self) -> Union[ndarray, "Tensor"]:
         assert self._spec.sensor_type == SensorType.AUDIO
-        audio_sensor = self._agent._sensors["audio_sensor"]
+        audio_sensor = self._sensor_object
         # tell the audio sensor about the agent location
         rot = self._agent.state.rotation
 
